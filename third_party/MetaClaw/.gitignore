@@ -1,0 +1,9 @@
+*.pyc
+__pycache__/
+records/
+wandb/
+memory_data/skills
+
+# Node
+node_modules/
+.DS_Store

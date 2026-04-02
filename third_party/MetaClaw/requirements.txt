@@ -1,0 +1,16 @@
+# Core — always required
+torch
+transformers>=4.51.1
+httpx
+fastapi
+uvicorn[standard]
+
+# Optional: skill_manager.py embedding retrieval mode (retrieval_mode="embedding")
+numpy
+sentence-transformers
+
+# Optional: skill_evolver.py Azure OpenAI skill evolution (enable_skill_evolution=True)
+openai
+
+# Optional: training metrics logging
+wandb
