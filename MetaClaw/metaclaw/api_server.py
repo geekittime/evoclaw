@@ -465,8 +465,19 @@ def _parse_inline_feedback(text: str) -> tuple[str, str] | None:
     if not raw:
         return None
 
+    ascii_match = re.search(
+        r"(?:^|\s)(?:/(?:feedback|fb)|feedback|fb)\s+(good|bad)\b(.*)$",
+        raw,
+        re.IGNORECASE,
+    )
+    if ascii_match:
+        return (
+            (ascii_match.group(1) or "").strip().lower(),
+            (ascii_match.group(2) or "").strip(),
+        )
+
     for pattern in _INLINE_FEEDBACK_PATTERNS:
-        match = pattern.match(raw)
+        match = pattern.search(raw)
         if match:
             return (match.group(1) or "").strip().lower(), (match.group(2) or "").strip()
 
@@ -478,9 +489,10 @@ def _parse_inline_feedback(text: str) -> tuple[str, str] | None:
     cn_poor = chr(0x574f)
     compact = raw.replace(chr(0xff1a), ':')
     for prefix in (cn_feedback, cn_reply, cn_last):
-        if not compact.startswith(prefix):
+        idx = compact.find(prefix)
+        if idx == -1:
             continue
-        rest = compact[len(prefix):].lstrip()
+        rest = compact[idx + len(prefix):].lstrip()
         for label, rating in ((cn_bad, "bad"), (cn_poor, "bad"), (cn_good, "good")):
             if rest.startswith(label):
                 feedback_text = rest[len(label):].lstrip(" :-")
