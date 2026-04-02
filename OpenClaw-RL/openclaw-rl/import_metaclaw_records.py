@@ -21,6 +21,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+
 def normalize_record(raw: dict) -> dict:
     return {
         "session_id": raw.get("session_id", ""),
