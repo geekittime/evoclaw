@@ -46,6 +46,25 @@ _FEEDBACK_SKILL_INSTRUCTION = (
     "- Anti-pattern: ...'"
 )
 
+_TASK_BRIEF_INSTRUCTION = (
+    "You are maintaining a compact task brief for an autonomous agent. "
+    "Given the latest user instruction and the prior brief if available, produce an updated brief "
+    "that the agent can inject into future prompts. "
+    "Return ONLY valid JSON with keys: goal, constraints, success_criteria, style_preferences, open_questions. "
+    "Each value must be a short list of strings. Keep only stable, actionable items. "
+    "Do not invent requirements."
+)
+
+_SESSION_REPORT_INSTRUCTION = (
+    "You are writing a compact session report for an autonomous agent system. "
+    "You will receive the trajectory, task brief, user feedback, and injected skills. "
+    "Return ONLY valid JSON with keys: summary, wins, issues, reusable_lessons, "
+    "suggested_next_step, success_estimate. "
+    "summary and suggested_next_step are strings. wins/issues/reusable_lessons are short string lists. "
+    "success_estimate must be one of: low, medium, high. "
+    "Focus on what helps future training-free adaptation or later RL analysis."
+)
+
 
 def _get_llm_provider() -> str:
     """Detect whether to use Bedrock or OpenAI based on config/env."""
@@ -164,6 +183,46 @@ def run_feedback_skill_llm(
     client_base_url = base_url or os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
     client_model_id = model_id or os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
     rewrite_messages = [{"role": "system", "content": _FEEDBACK_SKILL_INSTRUCTION}, *messages]
+    return _run_openai_chat_completion(
+        rewrite_messages,
+        api_key=client_api_key,
+        base_url=client_base_url,
+        model_id=client_model_id,
+        max_completion_tokens=max_completion_tokens,
+    )
+
+
+def run_task_brief_llm(
+    messages,
+    api_key: str = "",
+    base_url: str = "",
+    model_id: str = "",
+    max_completion_tokens: int = 700,
+):
+    client_api_key = api_key or os.environ.get("DEEPSEEK_API_KEY", "")
+    client_base_url = base_url or os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
+    client_model_id = model_id or os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
+    rewrite_messages = [{"role": "system", "content": _TASK_BRIEF_INSTRUCTION}, *messages]
+    return _run_openai_chat_completion(
+        rewrite_messages,
+        api_key=client_api_key,
+        base_url=client_base_url,
+        model_id=client_model_id,
+        max_completion_tokens=max_completion_tokens,
+    )
+
+
+def run_session_report_llm(
+    messages,
+    api_key: str = "",
+    base_url: str = "",
+    model_id: str = "",
+    max_completion_tokens: int = 1000,
+):
+    client_api_key = api_key or os.environ.get("DEEPSEEK_API_KEY", "")
+    client_base_url = base_url or os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
+    client_model_id = model_id or os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
+    rewrite_messages = [{"role": "system", "content": _SESSION_REPORT_INSTRUCTION}, *messages]
     return _run_openai_chat_completion(
         rewrite_messages,
         api_key=client_api_key,

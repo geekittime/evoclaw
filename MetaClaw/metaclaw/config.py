@@ -73,6 +73,18 @@ class MetaClawConfig:
     user_profile_enabled: bool = True
     user_profile_path: str = "records/user_profiles.json"
     user_profile_max_entries: int = 12
+    task_brief_enabled: bool = True
+    task_brief_path: str = "records/task_briefs.json"
+    task_brief_model_id: str = "deepseek-chat"
+    task_brief_api_base: str = "https://api.deepseek.com/v1"
+    task_brief_api_key: str = "sk-3b5348120d3c47dbbc5efb1c32606e52"
+    task_brief_max_completion_tokens: int = 700
+    session_report_enabled: bool = True
+    session_report_path: str = "records/session_reports.jsonl"
+    session_report_model_id: str = "deepseek-chat"
+    session_report_api_base: str = "https://api.deepseek.com/v1"
+    session_report_api_key: str = "sk-3b5348120d3c47dbbc5efb1c32606e52"
+    session_report_max_completion_tokens: int = 1000
 
     # ------------------------------------------------------------------ #
     # Memory                                                              #

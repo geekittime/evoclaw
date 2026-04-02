@@ -38,7 +38,13 @@ from .data_formatter import ConversationSample
 from .memory.scope import base_scope, derive_memory_scope
 from .prm_scorer import PRMScorer
 from .skill_manager import SkillManager
-from .utils import run_context_summary_llm, run_feedback_skill_llm, run_llm
+from .utils import (
+    run_context_summary_llm,
+    run_feedback_skill_llm,
+    run_llm,
+    run_session_report_llm,
+    run_task_brief_llm,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -682,6 +688,8 @@ class MetaClawAPIServer:
         self._feedback_by_session: dict[str, list[dict[str, Any]]] = {}
         self._latest_injected_skills: dict[str, list[str]] = {}
         self._user_profiles: dict[str, list[str]] = self._load_user_profiles()
+        self._task_briefs: dict[str, dict[str, list[str]]] = self._load_task_briefs()
+        self._latest_session_reports: dict[str, dict[str, Any]] = {}
         # Buffer turns per session for skill evolution (cleared on evolution trigger)
         self._session_turns: dict[str, list] = {}
         # Buffer turns per session for memory ingestion (only cleared on session_done)
@@ -706,6 +714,7 @@ class MetaClawAPIServer:
         self._openclaw_rl_record_file = ""
         self._feedback_file = ""
         self._prm_record_file = ""
+        self._session_report_file = ""
         if config.record_enabled:
             os.makedirs(config.record_dir, exist_ok=True)
             self._record_file = _resolve_record_path(config.record_dir, config.record_enriched_file)
@@ -715,6 +724,7 @@ class MetaClawAPIServer:
             )
             self._prm_record_file = _resolve_record_path(config.record_dir, "prm_scores.jsonl")
             self._feedback_file = _resolve_record_path(config.record_dir, config.feedback_history_path)
+            self._session_report_file = _resolve_record_path(config.record_dir, config.session_report_path)
             with open(self._record_file, "a", encoding="utf-8"):
                 pass
             with open(self._openclaw_rl_record_file, "a", encoding="utf-8"):
@@ -722,6 +732,8 @@ class MetaClawAPIServer:
             with open(self._prm_record_file, "a", encoding="utf-8"):
                 pass
             with open(self._feedback_file, "a", encoding="utf-8"):
+                pass
+            with open(self._session_report_file, "a", encoding="utf-8"):
                 pass
 
         if self.config.feedback_enabled and self.skill_manager is not None:
@@ -1136,6 +1148,35 @@ class MetaClawAPIServer:
             )
             return JSONResponse(content=result)
 
+        @app.get("/v1/session/report")
+        async def get_session_report(
+            request: Request,
+            session_id: str,
+            authorization: Optional[str] = Header(default=None),
+        ):
+            owner: MetaClawAPIServer = request.app.state.owner
+            await owner._check_auth(authorization)
+            report = owner._load_latest_session_report(session_id.strip())
+            if report is None:
+                raise HTTPException(status_code=404, detail="session report not found")
+            return JSONResponse(content=report)
+
+        @app.get("/v1/task-brief")
+        async def get_task_brief(
+            request: Request,
+            session_id: str,
+            scope: str = "",
+            authorization: Optional[str] = Header(default=None),
+        ):
+            owner: MetaClawAPIServer = request.app.state.owner
+            await owner._check_auth(authorization)
+            key = owner._profile_key(session_id.strip(), scope.strip())
+            return JSONResponse(content={
+                "session_id": session_id,
+                "scope": scope,
+                "task_brief": owner._task_briefs.get(key, {}),
+            })
+
         return app
 
     async def _check_auth(self, authorization: Optional[str]):
@@ -1238,6 +1279,73 @@ class MetaClawAPIServer:
         except OSError as e:
             logger.warning("[OpenClaw] failed to write user profile file: %s", e)
 
+    def _load_task_briefs(self) -> dict[str, dict[str, list[str]]]:
+        path = _resolve_record_path(self.config.record_dir, self.config.task_brief_path)
+        if not path:
+            return {}
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                return {}
+            normalized: dict[str, dict[str, list[str]]] = {}
+            for key, value in data.items():
+                if not isinstance(value, dict):
+                    continue
+                item: dict[str, list[str]] = {}
+                for field in ("goal", "constraints", "success_criteria", "style_preferences", "open_questions"):
+                    raw_list = value.get(field, [])
+                    if isinstance(raw_list, list):
+                        item[field] = [str(v).strip() for v in raw_list if str(v).strip()]
+                normalized[str(key)] = item
+            return normalized
+        except Exception:
+            return {}
+
+    def _save_task_briefs(self) -> None:
+        path = _resolve_record_path(self.config.record_dir, self.config.task_brief_path)
+        if not path:
+            return
+        try:
+            parent = os.path.dirname(path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(self._task_briefs, f, ensure_ascii=False, indent=2)
+        except OSError as e:
+            logger.warning("[OpenClaw] failed to write task brief file: %s", e)
+
+    def _append_session_report(self, report: dict[str, Any]) -> None:
+        if not self._session_report_file:
+            return
+        try:
+            with open(self._session_report_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(report, ensure_ascii=False) + "\n")
+        except OSError as e:
+            logger.warning("[OpenClaw] failed to write session report: %s", e)
+
+    def _load_latest_session_report(self, session_id: str) -> dict[str, Any] | None:
+        if session_id in self._latest_session_reports:
+            return self._latest_session_reports[session_id]
+        if not self._session_report_file or not os.path.exists(self._session_report_file):
+            return None
+        latest_match: dict[str, Any] | None = None
+        try:
+            with open(self._session_report_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        item = json.loads(line)
+                    except Exception:
+                        continue
+                    if item.get("session_id") == session_id:
+                        latest_match = item
+        except OSError:
+            return None
+        return latest_match
+
     def _load_record_for_feedback(self, session_id: str, turn: int | None) -> dict[str, Any] | None:
         pending = self._pending_records.get(session_id)
         if pending is not None and (turn is None or int(pending.get("turn", 0) or 0) == turn):
@@ -1302,6 +1410,8 @@ class MetaClawAPIServer:
         instruction_text = _extract_last_user_instruction(messages)
         context_summary = _extract_context_summary_text(messages)
         injected_skills = list(self._latest_injected_skills.get(session_id, []))
+        brief_key = self._task_brief_key(session_id, self._session_memory_scopes.get(session_id, ""))
+        task_brief = self._task_briefs.get(brief_key, {})
         self._pending_records[session_id] = {
             "schema": "metaclaw.conversation_record.v2",
             "source": "metaclaw",
@@ -1316,6 +1426,7 @@ class MetaClawAPIServer:
             "context_summary": context_summary,
             "context_summary_used": bool(context_summary),
             "injected_skills": injected_skills,
+            "task_brief": task_brief,
         }
 
     def _append_prm_record(self, session_id: str, turn_num: int,
@@ -1339,6 +1450,7 @@ class MetaClawAPIServer:
             (self._enriched_record_file, "record"),
             (self._openclaw_rl_record_file, "OpenClaw-RL record"),
             (self._prm_record_file, "PRM record"),
+            (self._session_report_file, "session report"),
         ]:
             if not path:
                 continue
@@ -1545,9 +1657,12 @@ class MetaClawAPIServer:
         if effective_memory_scope:
             self._session_memory_scopes[session_id] = effective_memory_scope
         self._update_user_profile(session_id, effective_memory_scope, latest_user_text)
+        await self._update_task_brief(session_id, effective_memory_scope, latest_user_text)
 
         # Inject memory and skills into system message for main turns
         if turn_type == "main":
+            if self.config.task_brief_enabled:
+                messages = self._inject_task_brief(messages, session_id, effective_memory_scope)
             if self.config.user_profile_enabled:
                 messages = self._inject_user_profile(messages, session_id, effective_memory_scope)
             if self.config.feedback_enabled:
@@ -1653,6 +1768,8 @@ class MetaClawAPIServer:
                     self._session_memory_turns.setdefault(session_id, []).append(turn_entry)
                 # session_done handling for skills_only path (tokenizer unavailable)
                 if session_done and not self.config.memory_manual_trigger:
+                    if self.config.session_report_enabled:
+                        self._safe_create_task(self._generate_session_report(session_id, effective_memory_scope))
                     self._flush_pending_record(session_id, None)
                     self._maybe_submit_ready_samples(session_id, force_no_prm=True)
                     eff = self._session_effective.pop(session_id, 0)
@@ -1676,6 +1793,8 @@ class MetaClawAPIServer:
                     if evolution_turns and self.skill_evolver and self.config.enable_skill_evolution:
                         self._safe_create_task(self._evolve_skills_for_session(evolution_turns))
                 elif session_done and self.config.memory_manual_trigger:
+                    if self.config.session_report_enabled:
+                        self._safe_create_task(self._generate_session_report(session_id, effective_memory_scope))
                     self._flush_pending_record(session_id, None)
                     self._maybe_submit_ready_samples(session_id, force_no_prm=True)
                     self._session_effective.pop(session_id, 0)
@@ -1768,6 +1887,8 @@ class MetaClawAPIServer:
                 })
 
         if session_done and not self.config.memory_manual_trigger:
+            if self.config.session_report_enabled:
+                self._safe_create_task(self._generate_session_report(session_id, effective_memory_scope))
             self._flush_pending_record(session_id, None)
             self._maybe_submit_ready_samples(session_id, force_no_prm=True)
             eff = self._session_effective.pop(session_id, 0)
@@ -1793,6 +1914,8 @@ class MetaClawAPIServer:
             if evolution_turns and self.skill_evolver and self.config.enable_skill_evolution:
                 self._safe_create_task(self._evolve_skills_for_session(evolution_turns))
         elif session_done and self.config.memory_manual_trigger:
+            if self.config.session_report_enabled:
+                self._safe_create_task(self._generate_session_report(session_id, effective_memory_scope))
             # manual_trigger mode: clean up non-memory state, keep memory buffer for manual ingest
             self._flush_pending_record(session_id, None)
             self._maybe_submit_ready_samples(session_id, force_no_prm=True)
@@ -2100,6 +2223,81 @@ class MetaClawAPIServer:
             messages.insert(0, {"role": "system", "content": skill_text})
         return messages
 
+    def _task_brief_key(self, session_id: str, scope_id: str = "") -> str:
+        return self._profile_key(session_id, scope_id)
+
+    async def _update_task_brief(self, session_id: str, scope_id: str, latest_user_text: str) -> None:
+        if not self.config.task_brief_enabled or not latest_user_text:
+            return
+        key = self._task_brief_key(session_id, scope_id)
+        existing = self._task_briefs.get(key, {})
+        prompt_parts = [
+            f"Latest user instruction:\n{latest_user_text}",
+            f"Existing task brief:\n{json.dumps(existing, ensure_ascii=False)}",
+        ]
+        try:
+            raw = await asyncio.to_thread(
+                run_task_brief_llm,
+                [{"role": "user", "content": "\n\n".join(prompt_parts)}],
+                self.config.task_brief_api_key,
+                self.config.task_brief_api_base,
+                self.config.task_brief_model_id,
+                self.config.task_brief_max_completion_tokens,
+            )
+            raw = (raw or "").strip()
+            start = raw.find("{")
+            end = raw.rfind("}") + 1
+            payload = json.loads(raw[start:end])
+        except Exception as e:
+            logger.warning("[TaskBrief] failed to update task brief for %s: %s", session_id, e)
+            return
+
+        normalized: dict[str, list[str]] = {}
+        for field in ("goal", "constraints", "success_criteria", "style_preferences", "open_questions"):
+            value = payload.get(field, [])
+            if isinstance(value, list):
+                normalized[field] = [str(v).strip() for v in value if str(v).strip()]
+            elif isinstance(value, str) and value.strip():
+                normalized[field] = [value.strip()]
+        if normalized:
+            self._task_briefs[key] = normalized
+            self._save_task_briefs()
+
+    def _inject_task_brief(self, messages: list[dict], session_id: str, scope_id: str) -> list[dict]:
+        if not self.config.task_brief_enabled:
+            return messages
+        key = self._task_brief_key(session_id, scope_id)
+        brief = self._task_briefs.get(key, {})
+        if not brief:
+            return messages
+
+        lines = ["## Task Brief"]
+        field_titles = {
+            "goal": "Goal",
+            "constraints": "Constraints",
+            "success_criteria": "Success Criteria",
+            "style_preferences": "Style Preferences",
+            "open_questions": "Open Questions",
+        }
+        for field in ("goal", "constraints", "success_criteria", "style_preferences", "open_questions"):
+            items = brief.get(field, [])
+            if not items:
+                continue
+            lines.append(f"\n### {field_titles[field]}")
+            lines.extend(f"- {item}" for item in items)
+        brief_block = "\n".join(lines)
+
+        messages = list(messages)
+        sys_indices = [i for i, m in enumerate(messages) if m.get("role") == "system"]
+        if sys_indices:
+            idx = sys_indices[0]
+            existing = _flatten_message_content(messages[idx].get("content", ""))
+            if "## Task Brief" not in existing:
+                messages[idx] = {**messages[idx], "content": existing + "\n\n" + brief_block}
+        else:
+            messages.insert(0, {"role": "system", "content": brief_block})
+        return messages
+
     def _profile_key(self, session_id: str, scope_id: str = "") -> str:
         return base_scope(scope_id) if scope_id else session_id
 
@@ -2140,6 +2338,95 @@ class MetaClawAPIServer:
         else:
             messages.insert(0, {"role": "system", "content": profile_block})
         return messages
+
+    def _load_session_records(self, session_id: str, max_records: int = 50) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        if self._enriched_record_file and os.path.exists(self._enriched_record_file):
+            try:
+                with open(self._enriched_record_file, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            item = json.loads(line)
+                        except Exception:
+                            continue
+                        if item.get("session_id") == session_id:
+                            records.append(item)
+            except OSError:
+                pass
+        pending = self._pending_records.get(session_id)
+        if pending is not None:
+            records.append(dict(pending))
+        records.sort(key=lambda x: int(x.get("turn", 0) or 0))
+        return records[-max_records:]
+
+    async def _generate_session_report(self, session_id: str, scope_id: str = "") -> None:
+        if not self.config.session_report_enabled:
+            return
+        records = self._load_session_records(session_id)
+        if not records:
+            return
+        key = self._task_brief_key(session_id, scope_id)
+        task_brief = self._task_briefs.get(key, {})
+        feedback_history = self._feedback_by_session.get(session_id, [])
+        injected_skills = sorted({
+            skill
+            for rec in records
+            for skill in (rec.get("injected_skills") or [])
+            if isinstance(skill, str) and skill
+        })
+        report_prompt = {
+            "session_id": session_id,
+            "task_brief": task_brief,
+            "feedback_history": feedback_history[-10:],
+            "injected_skills": injected_skills,
+            "records": [
+                {
+                    "turn": rec.get("turn"),
+                    "instruction_text": rec.get("instruction_text", ""),
+                    "response_text": rec.get("response_text", "")[:3000],
+                    "next_state_text": rec.get("next_state_text", "")[:1500],
+                    "context_summary": rec.get("context_summary", ""),
+                }
+                for rec in records
+            ],
+        }
+        try:
+            raw = await asyncio.to_thread(
+                run_session_report_llm,
+                [{"role": "user", "content": json.dumps(report_prompt, ensure_ascii=False)}],
+                self.config.session_report_api_key,
+                self.config.session_report_api_base,
+                self.config.session_report_model_id,
+                self.config.session_report_max_completion_tokens,
+            )
+            raw = (raw or "").strip()
+            start = raw.find("{")
+            end = raw.rfind("}") + 1
+            payload = json.loads(raw[start:end])
+        except Exception as e:
+            logger.warning("[SessionReport] failed to build session report for %s: %s", session_id, e)
+            return
+
+        report = {
+            "session_id": session_id,
+            "scope_id": scope_id,
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "turn_count": len(records),
+            "task_brief": task_brief,
+            "feedback_count": len(feedback_history),
+            "injected_skills": injected_skills,
+            "summary": str(payload.get("summary", "") or ""),
+            "wins": payload.get("wins", []) if isinstance(payload.get("wins", []), list) else [],
+            "issues": payload.get("issues", []) if isinstance(payload.get("issues", []), list) else [],
+            "reusable_lessons": payload.get("reusable_lessons", []) if isinstance(payload.get("reusable_lessons", []), list) else [],
+            "suggested_next_step": str(payload.get("suggested_next_step", "") or ""),
+            "success_estimate": str(payload.get("success_estimate", "") or "medium"),
+        }
+        self._latest_session_reports[session_id] = report
+        self._append_session_report(report)
 
     async def _update_important_skill_from_feedback(
         self,
