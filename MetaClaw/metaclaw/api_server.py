@@ -145,8 +145,6 @@ _KIMI_TOOL_CALL_RE = re.compile(
 _QWEN_TOOL_CALL_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL)
 _INLINE_FEEDBACK_PATTERNS = [
     re.compile(r"^/(?:feedback|fb)\s+(good|bad)\s*(.*)$", re.IGNORECASE),
-    re.compile("^(?:反馈|回馈)(好|不好|坏)[:：\\s-]*(.*)$"),
-    re.compile("^上次(好|不好|坏)[:：\\s-]*(.*)$"),
 ]
 
 def _normalize_tool_name(raw_name: str, args_raw: str) -> str:
@@ -466,41 +464,76 @@ def _parse_inline_feedback(text: str) -> tuple[str, str] | None:
     raw = (text or "").strip()
     if not raw:
         return None
-    rating_aliases = {
-        "好": "good",
-        "不好": "bad",
-        "坏": "bad",
-    }
+
     for pattern in _INLINE_FEEDBACK_PATTERNS:
         match = pattern.match(raw)
-        if not match:
+        if match:
+            return (match.group(1) or "").strip().lower(), (match.group(2) or "").strip()
+
+    cn_feedback = chr(0x53cd) + chr(0x9988)
+    cn_reply = chr(0x56de) + chr(0x9988)
+    cn_last = chr(0x4e0a) + chr(0x6b21)
+    cn_good = chr(0x597d)
+    cn_bad = chr(0x4e0d) + chr(0x597d)
+    cn_poor = chr(0x574f)
+    compact = raw.replace(chr(0xff1a), ':')
+    for prefix in (cn_feedback, cn_reply, cn_last):
+        if not compact.startswith(prefix):
             continue
-        rating = (match.group(1) or "").strip().lower()
-        rating = rating_aliases.get(rating, rating)
-        feedback_text = (match.group(2) or "").strip()
-        return rating, feedback_text
+        rest = compact[len(prefix):].lstrip()
+        for label, rating in ((cn_bad, "bad"), (cn_poor, "bad"), (cn_good, "good")):
+            if rest.startswith(label):
+                feedback_text = rest[len(label):].lstrip(" :-")
+                return rating, feedback_text.strip()
     return None
+
+
+def _find_inline_feedback(messages: list[dict]) -> tuple[str, str, str] | None:
+    text = _extract_last_user_instruction(messages)
+    if not text:
+        return None
+    parsed = _parse_inline_feedback(text)
+    if parsed is None:
+        return None
+    return parsed[0], parsed[1], text
 
 
 def _extract_preference_clauses(text: str) -> list[str]:
     raw = (text or "").strip()
     if not raw:
         return []
-    patterns = [
-        r"(?:请|麻烦)?尽量[^。；;\n]+",
-        r"(?:请|麻烦)?不要[^。；;\n]+",
-        r"(?:请|麻烦)?别[^。；;\n]+",
-        r"(?:以后|后面)请[^。；;\n]+",
-        r"(?:我更希望|我希望|我偏好|我更喜欢)[^。；;\n]+",
-        r"(?:回答时|回复时)[^。；;\n]+",
-        r"(?:please|prefer|i prefer|i want|next time please|avoid|don't)\s+[^.;\n]+",
+    segments = [seg.strip() for seg in re.split("[.;\n\u3002\uff1b]+", raw) if seg.strip()]
+    cn_prefixes = [
+        chr(0x8bf7),
+        chr(0x9ebb) + chr(0x70e6),
+        chr(0x5c3d) + chr(0x91cf),
+        chr(0x4e0d) + chr(0x8981),
+        chr(0x522b),
+        chr(0x4ee5) + chr(0x540e),
+        chr(0x540e) + chr(0x9762),
+        chr(0x6211) + chr(0x66f4) + chr(0x5e0c) + chr(0x671b),
+        chr(0x6211) + chr(0x5e0c) + chr(0x671b),
+        chr(0x6211) + chr(0x504f) + chr(0x597d),
+        chr(0x6211) + chr(0x66f4) + chr(0x559c) + chr(0x6b22),
+        chr(0x56de) + chr(0x7b54) + chr(0x65f6),
+        chr(0x56de) + chr(0x590d) + chr(0x65f6),
     ]
+    en_prefixes = (
+        "please",
+        "prefer",
+        "i prefer",
+        "i want",
+        "next time please",
+        "avoid",
+        "don't",
+    )
+
     results: list[str] = []
-    for pattern in patterns:
-        for match in re.finditer(pattern, raw, flags=re.IGNORECASE):
-            clause = match.group(0).strip()
-            if len(clause) >= 4 and clause not in results:
-                results.append(clause)
+    for seg in segments:
+        lower = seg.lower()
+        if any(seg.startswith(prefix) for prefix in cn_prefixes) or any(lower.startswith(prefix) for prefix in en_prefixes):
+            if len(seg) >= 4 and seg not in results:
+                results.append(seg)
     return results[:4]
 
 
@@ -678,6 +711,9 @@ class MetaClawAPIServer:
                 pass
             with open(self._feedback_file, "a", encoding="utf-8"):
                 pass
+
+        if self.config.feedback_enabled and self.skill_manager is not None:
+            self._ensure_important_skill_exists()
 
         # Tokenizer is used in both modes for prompt length accounting/truncation,
         # and in RL mode additionally for training sample tokenization.
@@ -1414,26 +1450,31 @@ class MetaClawAPIServer:
         if not isinstance(messages, list) or not messages:
             raise HTTPException(status_code=400, detail="messages must be a non-empty list")
         self._latest_injected_skills.pop(session_id, None)
-        inline_feedback = None
+        inline_feedback = _find_inline_feedback(messages) if self.config.feedback_enabled else None
         latest_user_text = _extract_last_user_instruction(messages)
-        if turn_type == "main" and self.config.feedback_enabled and latest_user_text:
-            inline_feedback = _parse_inline_feedback(latest_user_text)
         if inline_feedback is not None:
+            rating, feedback_text, feedback_raw_text = inline_feedback
             if session_id in self._pending_records:
                 self._flush_pending_record(
                     session_id,
-                    {"role": "user", "content": latest_user_text},
+                    {"role": "user", "content": feedback_raw_text},
                 )
-            result = await self._handle_feedback(
+            logger.info(
+                "[Feedback] intercepted inline feedback session=%s rating=%s text=%s",
+                session_id,
+                rating,
+                feedback_text[:200],
+            )
+            await self._handle_feedback(
                 session_id=session_id,
                 turn=None,
-                rating=inline_feedback[0],
-                feedback_text=inline_feedback[1],
+                rating=rating,
+                feedback_text=feedback_text,
             )
             ack = (
-                "已记录这次正向反馈。"
-                if inline_feedback[0] == "good"
-                else "已记录这次负向反馈，并把原因追加到 important-notes 注意事项中。"
+                "Feedback recorded."
+                if rating == "good"
+                else "Negative feedback recorded; appended a lesson to important-notes."
             )
             return self._build_feedback_ack_response(
                 session_id=session_id,
@@ -2004,6 +2045,18 @@ class MetaClawAPIServer:
             ),
         }
 
+    def _ensure_important_skill_exists(self) -> dict[str, Any]:
+        important = self._get_important_skill()
+        if important is not None:
+            return important
+        important = self._build_default_important_skill()
+        if self.skill_manager is not None:
+            self.skill_manager.upsert_skill(important)
+            reloaded = self._get_important_skill()
+            if reloaded is not None:
+                return reloaded
+        return important
+
     def _merge_important_skill(self, skills: list[dict]) -> list[dict]:
         important = self._get_important_skill()
         if important is None:
@@ -2014,7 +2067,7 @@ class MetaClawAPIServer:
         return [important] + list(skills)
 
     def _inject_important_skill(self, messages: list[dict]) -> list[dict]:
-        important = self._get_important_skill() or self._build_default_important_skill()
+        important = self._ensure_important_skill_exists()
         skill_text = self.skill_manager.format_for_conversation([important]) if self.skill_manager else (
             "## Active Skills\n\n### "
             + important.get("name", "important-notes")
