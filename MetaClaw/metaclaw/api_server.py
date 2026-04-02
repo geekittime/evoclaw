@@ -143,6 +143,11 @@ _KIMI_TOOL_CALL_RE = re.compile(
     re.DOTALL,
 )
 _QWEN_TOOL_CALL_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL)
+_INLINE_FEEDBACK_PATTERNS = [
+    re.compile(r"^/(?:feedback|fb)\s+(good|bad)\s*(.*)$", re.IGNORECASE),
+    re.compile(r"^(?:反馈|回馈)(好|不好|坏)[:：\s-]*(.*)$"),
+    re.compile(r"^上次(好|不好|坏)[:：\s-]*(.*)$"),
+]
 
 def _normalize_tool_name(raw_name: str, args_raw: str) -> str:
     """
@@ -455,6 +460,24 @@ def _extract_context_summary_text(messages: list[dict]) -> str:
         if idx != -1:
             return content[idx + len(marker):].strip()
     return ""
+
+
+def _parse_inline_feedback(text: str) -> tuple[str, str] | None:
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    for pattern in _INLINE_FEEDBACK_PATTERNS:
+        match = pattern.match(raw)
+        if not match:
+            continue
+        rating = (match.group(1) or "").strip().lower()
+        if rating in {"不好", "坏"}:
+            rating = "bad"
+        elif rating == "好":
+            rating = "good"
+        feedback_text = (match.group(2) or "").strip()
+        return rating, feedback_text
+    return None
 
 
 def _extract_logprobs_from_chat_response(choice: dict[str, Any]) -> list[float]:
@@ -1127,6 +1150,35 @@ class MetaClawAPIServer:
             return None
         return latest_match
 
+    def _build_feedback_ack_response(
+        self,
+        session_id: str,
+        message: str,
+        model: str = "",
+    ) -> dict[str, Any]:
+        return {
+            "response": {
+                "id": f"chatcmpl-feedback-{int(time.time())}",
+                "object": "chat.completion",
+                "created": int(time.time()),
+                "model": model or self._served_model,
+                "session_id": session_id,
+                "choices": [{
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": message,
+                    },
+                    "finish_reason": "stop",
+                }],
+                "usage": {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                },
+            }
+        }
+
     def _buffer_record(self, session_id: str, turn_num: int, messages: list,
                        prompt_text: str, response_text: str, tool_calls: list):
         if not self._record_file:
@@ -1291,6 +1343,32 @@ class MetaClawAPIServer:
         messages = body.get("messages")
         if not isinstance(messages, list) or not messages:
             raise HTTPException(status_code=400, detail="messages must be a non-empty list")
+        inline_feedback = None
+        latest_user_text = _extract_last_user_instruction(messages)
+        if turn_type == "main" and self.config.feedback_enabled and latest_user_text:
+            inline_feedback = _parse_inline_feedback(latest_user_text)
+        if inline_feedback is not None:
+            if session_id in self._pending_records:
+                self._flush_pending_record(
+                    session_id,
+                    {"role": "user", "content": latest_user_text},
+                )
+            result = await self._handle_feedback(
+                session_id=session_id,
+                turn=None,
+                rating=inline_feedback[0],
+                feedback_text=inline_feedback[1],
+            )
+            ack = (
+                "已记录这次正向反馈。"
+                if inline_feedback[0] == "good"
+                else "已记录这次负向反馈，并把原因追加到 important-notes 注意事项中。"
+            )
+            return self._build_feedback_ack_response(
+                session_id=session_id,
+                message=ack,
+                model=str(body.get("model", "") or self._served_model),
+            )
         rewritten = 0
         for msg in messages:
             if (
@@ -1839,9 +1917,12 @@ class MetaClawAPIServer:
                 "- Prefer verification over assumption when a mistake would compound.\n"
                 "- When execution has multiple steps, confirm the current sub-goal before moving on.\n"
                 "- Surface uncertainty early instead of hiding it.\n\n"
-                "### Anti-patterns\n"
-                "- Charging ahead after the user already indicated dissatisfaction.\n"
-                "- Repeating the same failed pattern without adaptation.\n"
+                "## Feedback Lessons\n\n"
+                "### Seed Lesson\n"
+                "- When this failure happens: the agent is about to act on an uncertain interpretation.\n"
+                "- Why the previous execution was bad: it moved ahead before re-checking the exact target.\n"
+                "- What the agent should do instead: restate the sub-goal and verify the risky assumption first.\n"
+                "- Anti-pattern: charging ahead after signals of ambiguity or user dissatisfaction.\n"
             ),
         }
 
@@ -1885,6 +1966,8 @@ class MetaClawAPIServer:
         if not self.skill_manager:
             raise HTTPException(status_code=503, detail="skills are not enabled")
         existing_skill = self._get_important_skill() or self._build_default_important_skill()
+        if rating != "bad":
+            return existing_skill
         prompt_sections = [
             f"Feedback rating: {rating}",
             f"User feedback:\n{feedback_text or '(no free-form feedback provided)'}",
@@ -1913,11 +1996,18 @@ class MetaClawAPIServer:
             logger.error("[Feedback] failed to parse feedback skill JSON: %s | raw=%s", e, raw[:500])
             raise HTTPException(status_code=502, detail="feedback skill synthesis failed") from e
 
+        append_entry = str(payload.get("append_entry", "") or "").strip()
+        if not append_entry:
+            raise HTTPException(status_code=502, detail="feedback skill synthesis returned empty lesson")
+        existing_content = str(existing_skill.get("content", "") or "").rstrip()
+        if "## Feedback Lessons" not in existing_content:
+            existing_content = existing_content.rstrip() + "\n\n## Feedback Lessons"
+        updated_content = existing_content.rstrip() + "\n\n" + append_entry
         updated_skill = {
             "name": self.config.important_feedback_skill_name,
-            "description": payload.get("description", "") or self.config.important_feedback_skill_description,
+            "description": existing_skill.get("description", "") or self.config.important_feedback_skill_description,
             "category": "general",
-            "content": payload.get("content", "") or existing_skill.get("content", ""),
+            "content": updated_content,
         }
         changed = self.skill_manager.upsert_skill(updated_skill)
         if changed:
@@ -1947,26 +2037,36 @@ class MetaClawAPIServer:
         self._feedback_by_session.setdefault(session_id, []).append(feedback_record)
         self._append_feedback_record(feedback_record)
 
-        updated_skill = await self._update_important_skill_from_feedback(
-            record=record,
-            rating=rating,
-            feedback_text=feedback_text,
-        )
-        logger.info(
-            "[Feedback] session=%s turn=%d rating=%s -> updated skill=%s",
-            session_id,
-            turn_num,
-            rating,
-            updated_skill.get("name", ""),
-        )
+        updated_skill = None
+        if rating == "bad":
+            updated_skill = await self._update_important_skill_from_feedback(
+                record=record,
+                rating=rating,
+                feedback_text=feedback_text,
+            )
+            logger.info(
+                "[Feedback] session=%s turn=%d rating=%s -> appended lesson to skill=%s",
+                session_id,
+                turn_num,
+                rating,
+                updated_skill.get("name", ""),
+            )
+        else:
+            logger.info(
+                "[Feedback] session=%s turn=%d rating=%s -> recorded only",
+                session_id,
+                turn_num,
+                rating,
+            )
         return {
             "ok": True,
             "session_id": session_id,
             "turn": turn_num,
             "rating": rating,
-            "skill_name": updated_skill.get("name", ""),
-            "skill_description": updated_skill.get("description", ""),
-            "skill_content": updated_skill.get("content", ""),
+            "skill_updated": rating == "bad",
+            "skill_name": updated_skill.get("name", "") if updated_skill else "",
+            "skill_description": updated_skill.get("description", "") if updated_skill else "",
+            "skill_content": updated_skill.get("content", "") if updated_skill else "",
         }
 
     # ------------------------------------------------------------------ #

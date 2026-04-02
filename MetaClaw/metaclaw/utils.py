@@ -32,14 +32,18 @@ _CONTEXT_SUMMARY_INSTRUCTION = (
 )
 
 _FEEDBACK_SKILL_INSTRUCTION = (
-    "You are updating a persistent caution skill for an autonomous agent. "
-    "You will receive the agent trajectory, explicit user feedback, and the current caution skill. "
-    "Your task is to update that skill so it captures stable, reusable lessons. "
-    "Focus on behavior rules that should generalize across future tasks. "
-    "Do not include one-off details that are irrelevant beyond this case. "
-    "Return ONLY valid JSON with keys: description, content. "
-    "The content must be Markdown with a heading, a short 'When to Use' section, "
-    "4-8 concrete rules, and an 'Anti-patterns' section."
+    "You are extracting one reusable failure lesson from an autonomous agent trajectory. "
+    "You will receive the agent trajectory, explicit user feedback, and the current persistent caution skill. "
+    "Only summarize why the last run went wrong and what the agent should do differently next time. "
+    "Focus on stable, reusable lessons. Avoid one-off details unless they explain the failure mode. "
+    "Return ONLY valid JSON with keys: lesson_title, append_entry. "
+    "append_entry must be Markdown that can be appended to an existing skill file. "
+    "Use this format: "
+    "'### <short title>\\n"
+    "- When this failure happens\\n"
+    "- Why the previous execution was bad\\n"
+    "- What the agent should do instead\\n"
+    "- Anti-pattern: ...'"
 )
 
 
