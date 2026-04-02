@@ -476,6 +476,48 @@ class SkillManager:
             self.generation += 1
         return added
 
+    def upsert_skill(self, skill: dict) -> bool:
+        """Insert or replace a skill by name.
+
+        Returns True when the in-memory bank changed.
+        """
+        name = skill.get("name", "").strip()
+        if not name:
+            logger.warning("[SkillManager] upsert_skill called with missing name")
+            return False
+
+        changed = False
+        for bucket_name in ("general_skills", "common_mistakes"):
+            bucket = self.skills.get(bucket_name, [])
+            for idx, existing in enumerate(bucket):
+                if existing.get("name", "").strip() == name:
+                    bucket[idx] = skill
+                    changed = True
+                    break
+            if changed:
+                break
+
+        if not changed:
+            task_buckets = self.skills.get("task_specific_skills", {})
+            for bucket in task_buckets.values():
+                for idx, existing in enumerate(bucket):
+                    if existing.get("name", "").strip() == name:
+                        bucket[idx] = skill
+                        changed = True
+                        break
+                if changed:
+                    break
+
+        if not changed:
+            changed = self.add_skill(skill)
+        else:
+            self._skill_embeddings_cache = None
+            self._write_skill_md(skill)
+            self.generation += 1
+            logger.info("[SkillManager] updated skill: %s", name)
+
+        return changed
+
     def _write_skill_md(self, skill: dict) -> None:
         """Persist a single skill to its SKILL.md file inside a subdirectory of skills_dir."""
         name = skill.get("name", "unknown")

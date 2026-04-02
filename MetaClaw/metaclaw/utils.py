@@ -31,6 +31,17 @@ _CONTEXT_SUMMARY_INSTRUCTION = (
     "Output only the summary text."
 )
 
+_FEEDBACK_SKILL_INSTRUCTION = (
+    "You are updating a persistent caution skill for an autonomous agent. "
+    "You will receive the agent trajectory, explicit user feedback, and the current caution skill. "
+    "Your task is to update that skill so it captures stable, reusable lessons. "
+    "Focus on behavior rules that should generalize across future tasks. "
+    "Do not include one-off details that are irrelevant beyond this case. "
+    "Return ONLY valid JSON with keys: description, content. "
+    "The content must be Markdown with a heading, a short 'When to Use' section, "
+    "4-8 concrete rules, and an 'Anti-patterns' section."
+)
+
 
 def _get_llm_provider() -> str:
     """Detect whether to use Bedrock or OpenAI based on config/env."""
@@ -129,6 +140,26 @@ def run_context_summary_llm(
     client_base_url = base_url or os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
     client_model_id = model_id or os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
     rewrite_messages = [{"role": "system", "content": _CONTEXT_SUMMARY_INSTRUCTION}, *messages]
+    return _run_openai_chat_completion(
+        rewrite_messages,
+        api_key=client_api_key,
+        base_url=client_base_url,
+        model_id=client_model_id,
+        max_completion_tokens=max_completion_tokens,
+    )
+
+
+def run_feedback_skill_llm(
+    messages,
+    api_key: str = "",
+    base_url: str = "",
+    model_id: str = "",
+    max_completion_tokens: int = 1200,
+):
+    client_api_key = api_key or os.environ.get("DEEPSEEK_API_KEY", "")
+    client_base_url = base_url or os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
+    client_model_id = model_id or os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
+    rewrite_messages = [{"role": "system", "content": _FEEDBACK_SKILL_INSTRUCTION}, *messages]
     return _run_openai_chat_completion(
         rewrite_messages,
         api_key=client_api_key,

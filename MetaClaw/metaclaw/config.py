@@ -58,6 +58,14 @@ class MetaClawConfig:
     skill_evolution_every_n_turns: int = 10  # Every N conversation turns (main turns), run skill evolution on those turns (RL and skills_only)
     skill_update_threshold: float = 0.4       # Evolve when success rate < threshold (trainer batch evolution)
     max_new_skills: int = 3
+    important_feedback_skill_name: str = "important-notes"
+    important_feedback_skill_description: str = "Use on every task. Contains persistent cautionary notes distilled from real user feedback on previous agent behavior."
+    feedback_enabled: bool = True
+    feedback_history_path: str = "records/feedback.jsonl"
+    feedback_skill_model_id: str = "deepseek-chat"
+    feedback_skill_api_base: str = "https://api.deepseek.com/v1"
+    feedback_skill_api_key: str = "sk-3b5348120d3c47dbbc5efb1c32606e52"
+    feedback_skill_max_completion_tokens: int = 1200
 
     # ------------------------------------------------------------------ #
     # Memory                                                              #

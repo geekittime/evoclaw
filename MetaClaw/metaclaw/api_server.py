@@ -38,7 +38,7 @@ from .data_formatter import ConversationSample
 from .memory.scope import base_scope, derive_memory_scope
 from .prm_scorer import PRMScorer
 from .skill_manager import SkillManager
-from .utils import run_llm
+from .utils import run_context_summary_llm, run_feedback_skill_llm, run_llm
 
 logger = logging.getLogger(__name__)
 
@@ -420,6 +420,43 @@ def _extract_last_user_instruction(messages: list[dict]) -> str:
     return ""
 
 
+def _render_context_messages(messages: list[dict], max_chars: int = 12000) -> str:
+    rendered: list[str] = []
+    total_chars = 0
+    for idx, msg in enumerate(messages, start=1):
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role", "unknown"))
+        content = _flatten_message_content(msg.get("content", ""))
+        tool_calls = msg.get("tool_calls")
+        line = f"[{idx}] {role}: {content}".strip()
+        if tool_calls:
+            try:
+                line += f"\n    tool_calls={json.dumps(tool_calls, ensure_ascii=False)}"
+            except Exception:
+                line += "\n    tool_calls=<unserializable>"
+        if total_chars + len(line) > max_chars:
+            remaining = max_chars - total_chars
+            if remaining > 0:
+                rendered.append(line[:remaining])
+            break
+        rendered.append(line)
+        total_chars += len(line) + 1
+    return "\n".join(rendered)
+
+
+def _extract_context_summary_text(messages: list[dict]) -> str:
+    marker = "## Conversation Summary"
+    for msg in messages:
+        if not isinstance(msg, dict) or msg.get("role") != "system":
+            continue
+        content = _flatten_message_content(msg.get("content", ""))
+        idx = content.find(marker)
+        if idx != -1:
+            return content[idx + len(marker):].strip()
+    return ""
+
+
 def _extract_logprobs_from_chat_response(choice: dict[str, Any]) -> list[float]:
     logprobs_obj = choice.get("logprobs")
     if not isinstance(logprobs_obj, dict):
@@ -535,6 +572,8 @@ class MetaClawAPIServer:
         self._teacher_tasks: dict[str, dict[int, asyncio.Task]] = {}  # session → {turn → task} (OPD)
         self._pending_records: dict[str, dict] = {}               # for record logging
         self._session_effective: dict[str, int] = {}              # at-least-one guarantee
+        self._session_context_summaries: dict[str, str] = {}
+        self._feedback_by_session: dict[str, list[dict[str, Any]]] = {}
         # Buffer turns per session for skill evolution (cleared on evolution trigger)
         self._session_turns: dict[str, list] = {}
         # Buffer turns per session for memory ingestion (only cleared on session_done)
@@ -555,14 +594,28 @@ class MetaClawAPIServer:
 
         # Record files
         self._record_file = ""
+        self._enriched_record_file = ""
+        self._openclaw_rl_record_file = ""
+        self._feedback_file = ""
         self._prm_record_file = ""
         if config.record_enabled:
             os.makedirs(config.record_dir, exist_ok=True)
-            self._record_file = os.path.join(config.record_dir, "conversations.jsonl")
+            self._record_file = os.path.join(config.record_dir, config.record_enriched_file)
+            self._enriched_record_file = self._record_file
+            self._openclaw_rl_record_file = os.path.join(
+                config.record_dir, config.record_openclaw_rl_file,
+            )
             self._prm_record_file = os.path.join(config.record_dir, "prm_scores.jsonl")
+            self._feedback_file = config.feedback_history_path
+            if not os.path.isabs(self._feedback_file):
+                self._feedback_file = os.path.join(config.record_dir, self._feedback_file)
             with open(self._record_file, "w"):
                 pass
+            with open(self._openclaw_rl_record_file, "w"):
+                pass
             with open(self._prm_record_file, "w"):
+                pass
+            with open(self._feedback_file, "a", encoding="utf-8"):
                 pass
 
         # Tokenizer is used in both modes for prompt length accounting/truncation,
@@ -947,6 +1000,33 @@ class MetaClawAPIServer:
                 "sessions": results,
             })
 
+        @app.post("/v1/feedback")
+        async def submit_feedback(
+            request: Request,
+            authorization: Optional[str] = Header(default=None),
+        ):
+            owner: MetaClawAPIServer = request.app.state.owner
+            await owner._check_auth(authorization)
+            if not owner.config.feedback_enabled:
+                raise HTTPException(status_code=503, detail="feedback is disabled")
+            body = await request.json()
+            session_id = str(body.get("session_id", "") or "").strip()
+            if not session_id:
+                raise HTTPException(status_code=400, detail="session_id is required")
+            turn_raw = body.get("turn")
+            turn = int(turn_raw) if turn_raw not in (None, "", False) else None
+            rating = str(body.get("rating", "") or "").strip().lower()
+            if rating not in {"good", "bad"}:
+                raise HTTPException(status_code=400, detail="rating must be 'good' or 'bad'")
+            feedback_text = str(body.get("feedback", "") or "").strip()
+            result = await owner._handle_feedback(
+                session_id=session_id,
+                turn=turn,
+                rating=rating,
+                feedback_text=feedback_text,
+            )
+            return JSONResponse(content=result)
+
         return app
 
     async def _check_auth(self, authorization: Optional[str]):
@@ -968,6 +1048,10 @@ class MetaClawAPIServer:
         if rec is None:
             return
         rec["next_state"] = next_state
+        rec["next_state_role"] = next_state.get("role", "") if isinstance(next_state, dict) else ""
+        rec["next_state_text"] = (
+            _flatten_message_content(next_state.get("content", "")) if isinstance(next_state, dict) else ""
+        )
         if next_state:
             ns_role = next_state.get("role", "?")
             ns_content = _flatten_message_content(next_state.get("content"))
@@ -983,19 +1067,75 @@ class MetaClawAPIServer:
                 rec.get("instruction_text", ""),
                 next_state,
             )
-        if self._record_file:
+        if self._enriched_record_file:
             try:
-                with open(self._record_file, "a", encoding="utf-8") as f:
+                with open(self._enriched_record_file, "a", encoding="utf-8") as f:
                     f.write(json.dumps(rec, ensure_ascii=False) + "\n")
             except OSError as e:
-                logger.warning("[OpenClaw] failed to write record: %s", e)
+                logger.warning("[OpenClaw] failed to write enriched record: %s", e)
+        if self._openclaw_rl_record_file:
+            rl_rec = {
+                "session_id": rec["session_id"],
+                "turn": rec["turn"],
+                "timestamp": rec["timestamp"],
+                "messages": rec["messages"],
+                "prompt_text": rec["prompt_text"],
+                "response_text": rec["response_text"],
+                "tool_calls": rec["tool_calls"],
+                "next_state": next_state,
+            }
+            try:
+                with open(self._openclaw_rl_record_file, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(rl_rec, ensure_ascii=False) + "\n")
+            except OSError as e:
+                logger.warning("[OpenClaw] failed to write OpenClaw-RL record: %s", e)
+
+    def _append_feedback_record(self, record: dict[str, Any]) -> None:
+        if not self._feedback_file:
+            return
+        try:
+            with open(self._feedback_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except OSError as e:
+            logger.warning("[OpenClaw] failed to write feedback record: %s", e)
+
+    def _load_record_for_feedback(self, session_id: str, turn: int | None) -> dict[str, Any] | None:
+        pending = self._pending_records.get(session_id)
+        if pending is not None and (turn is None or int(pending.get("turn", 0) or 0) == turn):
+            return dict(pending)
+
+        if not self._enriched_record_file or not os.path.exists(self._enriched_record_file):
+            return None
+
+        latest_match: dict[str, Any] | None = None
+        try:
+            with open(self._enriched_record_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        item = json.loads(line)
+                    except Exception:
+                        continue
+                    if item.get("session_id") != session_id:
+                        continue
+                    if turn is not None and int(item.get("turn", 0) or 0) != turn:
+                        continue
+                    latest_match = item
+        except OSError:
+            return None
+        return latest_match
 
     def _buffer_record(self, session_id: str, turn_num: int, messages: list,
                        prompt_text: str, response_text: str, tool_calls: list):
         if not self._record_file:
             return
         instruction_text = _extract_last_user_instruction(messages)
+        context_summary = _extract_context_summary_text(messages)
         self._pending_records[session_id] = {
+            "schema": "metaclaw.conversation_record.v2",
+            "source": "metaclaw",
             "session_id": session_id,
             "turn": turn_num,
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -1004,6 +1144,8 @@ class MetaClawAPIServer:
             "prompt_text": prompt_text,
             "response_text": response_text,
             "tool_calls": tool_calls or None,
+            "context_summary": context_summary,
+            "context_summary_used": bool(context_summary),
         }
 
     def _append_prm_record(self, session_id: str, turn_num: int,
@@ -1024,7 +1166,8 @@ class MetaClawAPIServer:
     def purge_record_files(self):
         """Clear all record JSONL files. Called when training starts."""
         for path, label in [
-            (self._record_file, "record"),
+            (self._enriched_record_file, "record"),
+            (self._openclaw_rl_record_file, "OpenClaw-RL record"),
             (self._prm_record_file, "PRM record"),
         ]:
             if not path:
@@ -1202,6 +1345,8 @@ class MetaClawAPIServer:
 
         # Inject memory and skills into system message for main turns
         if turn_type == "main":
+            if self.config.feedback_enabled:
+                messages = self._inject_important_skill(messages)
             if (
                 self.memory_manager
                 and self.skill_manager
@@ -1223,7 +1368,9 @@ class MetaClawAPIServer:
         # Truncate to fit within max_context_tokens (keep system + most-recent messages)
         max_prompt = self.config.max_context_tokens - int(body.get("max_tokens") or 2048)
         if max_prompt > 0:
-            messages = self._truncate_messages(messages, tools, max_prompt)
+            messages = await self._compress_messages_with_summary(
+                session_id, messages, tools, max_prompt,
+            )
 
         forward_body = {k: v for k, v in body.items() if k not in _NON_STANDARD_BODY_KEYS}
         forward_body["stream"] = False
@@ -1306,6 +1453,7 @@ class MetaClawAPIServer:
                     eff = self._session_effective.pop(session_id, 0)
                     self._turn_counts.pop(session_id, None)
                     self._teacher_tasks.pop(session_id, None)
+                    self._session_context_summaries.pop(session_id, None)
                     logger.info("[OpenClaw] session=%s done → cleaned up (effective_samples=%d)", session_id, eff)
                     memory_turns = self._session_memory_turns.pop(session_id, [])
                     if memory_turns and self.memory_manager is not None and self.config.memory_auto_extract:
@@ -1327,6 +1475,7 @@ class MetaClawAPIServer:
                     self._session_effective.pop(session_id, 0)
                     self._turn_counts.pop(session_id, None)
                     self._teacher_tasks.pop(session_id, None)
+                    self._session_context_summaries.pop(session_id, None)
                     logger.info("[OpenClaw] session=%s done (manual_trigger: memory buffer preserved, %d turns)",
                                 session_id, len(self._session_memory_turns.get(session_id, [])))
                 output["session_id"] = session_id
@@ -1417,6 +1566,7 @@ class MetaClawAPIServer:
             eff = self._session_effective.pop(session_id, 0)
             self._turn_counts.pop(session_id, None)
             self._teacher_tasks.pop(session_id, None)
+            self._session_context_summaries.pop(session_id, None)
             logger.info("[OpenClaw] session=%s done → cleaned up (effective_samples=%d)", session_id, eff)
             # session done: trigger memory ingestion from dedicated memory buffer
             memory_turns = self._session_memory_turns.pop(session_id, [])
@@ -1441,6 +1591,7 @@ class MetaClawAPIServer:
             self._session_effective.pop(session_id, 0)
             self._turn_counts.pop(session_id, None)
             self._teacher_tasks.pop(session_id, None)
+            self._session_context_summaries.pop(session_id, None)
             logger.info("[OpenClaw] session=%s done (manual_trigger: memory buffer preserved, %d turns)",
                         session_id, len(self._session_memory_turns.get(session_id, [])))
 
@@ -1654,6 +1805,313 @@ class MetaClawAPIServer:
                 category = skill.get("category", "general")
                 added += self.skill_manager.add_skills([skill], category=category)
             logger.info("[SkillEvolver] session analysis added %d new skills", added)
+
+    # ------------------------------------------------------------------ #
+    # Feedback-driven important skill                                      #
+    # ------------------------------------------------------------------ #
+
+    def _get_important_skill(self) -> dict[str, Any] | None:
+        if not self.skill_manager:
+            return None
+        target_name = self.config.important_feedback_skill_name.strip()
+        if not target_name:
+            return None
+        for bucket_name in ("general_skills", "common_mistakes"):
+            for skill in self.skill_manager.skills.get(bucket_name, []):
+                if skill.get("name", "").strip() == target_name:
+                    return skill
+        for bucket in self.skill_manager.skills.get("task_specific_skills", {}).values():
+            for skill in bucket:
+                if skill.get("name", "").strip() == target_name:
+                    return skill
+        return None
+
+    def _build_default_important_skill(self) -> dict[str, Any]:
+        return {
+            "name": self.config.important_feedback_skill_name,
+            "description": self.config.important_feedback_skill_description,
+            "category": "general",
+            "content": (
+                "## Important Notes\n\n"
+                "### When to Use\n"
+                "Use on every task before taking action.\n\n"
+                "- Re-check the latest user intent before acting.\n"
+                "- Prefer verification over assumption when a mistake would compound.\n"
+                "- When execution has multiple steps, confirm the current sub-goal before moving on.\n"
+                "- Surface uncertainty early instead of hiding it.\n\n"
+                "### Anti-patterns\n"
+                "- Charging ahead after the user already indicated dissatisfaction.\n"
+                "- Repeating the same failed pattern without adaptation.\n"
+            ),
+        }
+
+    def _merge_important_skill(self, skills: list[dict]) -> list[dict]:
+        important = self._get_important_skill()
+        if important is None:
+            important = self._build_default_important_skill()
+        existing_names = {s.get("name", "").strip() for s in skills if isinstance(s, dict)}
+        if important.get("name", "").strip() in existing_names:
+            return skills
+        return [important] + list(skills)
+
+    def _inject_important_skill(self, messages: list[dict]) -> list[dict]:
+        important = self._get_important_skill() or self._build_default_important_skill()
+        skill_text = self.skill_manager.format_for_conversation([important]) if self.skill_manager else (
+            "## Active Skills\n\n### "
+            + important.get("name", "important-notes")
+            + "\n_"
+            + important.get("description", "")
+            + "_\n\n"
+            + important.get("content", "")
+        )
+        messages = list(messages)
+        sys_indices = [i for i, m in enumerate(messages) if m.get("role") == "system"]
+        if sys_indices:
+            idx = sys_indices[0]
+            existing = _flatten_message_content(messages[idx].get("content", ""))
+            if important.get("name", "") in existing:
+                return messages
+            messages[idx] = {**messages[idx], "content": existing + "\n\n" + skill_text}
+        else:
+            messages.insert(0, {"role": "system", "content": skill_text})
+        return messages
+
+    async def _update_important_skill_from_feedback(
+        self,
+        record: dict[str, Any],
+        rating: str,
+        feedback_text: str,
+    ) -> dict[str, Any]:
+        if not self.skill_manager:
+            raise HTTPException(status_code=503, detail="skills are not enabled")
+        existing_skill = self._get_important_skill() or self._build_default_important_skill()
+        prompt_sections = [
+            f"Feedback rating: {rating}",
+            f"User feedback:\n{feedback_text or '(no free-form feedback provided)'}",
+            f"Existing important skill description:\n{existing_skill.get('description', '')}",
+            f"Existing important skill content:\n{existing_skill.get('content', '')}",
+            f"Conversation messages:\n{_render_context_messages(record.get('messages', []) or [], max_chars=8000)}",
+            f"Task instruction:\n{record.get('instruction_text', '')}",
+            f"Prompt text:\n{record.get('prompt_text', '')[:6000]}",
+            f"Assistant response:\n{record.get('response_text', '')[:4000]}",
+            f"Next state:\n{record.get('next_state_text', '')[:2000]}",
+        ]
+        raw = await asyncio.to_thread(
+            run_feedback_skill_llm,
+            [{"role": "user", "content": "\n\n".join(prompt_sections)}],
+            self.config.feedback_skill_api_key,
+            self.config.feedback_skill_api_base,
+            self.config.feedback_skill_model_id,
+            self.config.feedback_skill_max_completion_tokens,
+        )
+        raw = (raw or "").strip()
+        try:
+            start = raw.find("{")
+            end = raw.rfind("}") + 1
+            payload = json.loads(raw[start:end])
+        except Exception as e:
+            logger.error("[Feedback] failed to parse feedback skill JSON: %s | raw=%s", e, raw[:500])
+            raise HTTPException(status_code=502, detail="feedback skill synthesis failed") from e
+
+        updated_skill = {
+            "name": self.config.important_feedback_skill_name,
+            "description": payload.get("description", "") or self.config.important_feedback_skill_description,
+            "category": "general",
+            "content": payload.get("content", "") or existing_skill.get("content", ""),
+        }
+        changed = self.skill_manager.upsert_skill(updated_skill)
+        if changed:
+            self.skill_manager.reload()
+        return updated_skill
+
+    async def _handle_feedback(
+        self,
+        session_id: str,
+        turn: int | None,
+        rating: str,
+        feedback_text: str,
+    ) -> dict[str, Any]:
+        record = self._load_record_for_feedback(session_id, turn)
+        if record is None:
+            raise HTTPException(status_code=404, detail="target turn record not found")
+
+        turn_num = int(record.get("turn", 0) or 0)
+        feedback_record = {
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "session_id": session_id,
+            "turn": turn_num,
+            "rating": rating,
+            "feedback": feedback_text,
+            "instruction_text": record.get("instruction_text", ""),
+        }
+        self._feedback_by_session.setdefault(session_id, []).append(feedback_record)
+        self._append_feedback_record(feedback_record)
+
+        updated_skill = await self._update_important_skill_from_feedback(
+            record=record,
+            rating=rating,
+            feedback_text=feedback_text,
+        )
+        logger.info(
+            "[Feedback] session=%s turn=%d rating=%s -> updated skill=%s",
+            session_id,
+            turn_num,
+            rating,
+            updated_skill.get("name", ""),
+        )
+        return {
+            "ok": True,
+            "session_id": session_id,
+            "turn": turn_num,
+            "rating": rating,
+            "skill_name": updated_skill.get("name", ""),
+            "skill_description": updated_skill.get("description", ""),
+            "skill_content": updated_skill.get("content", ""),
+        }
+
+    # ------------------------------------------------------------------ #
+    # Context summarization                                                #
+    # ------------------------------------------------------------------ #
+
+    def _estimate_prompt_tokens(self, messages: list[dict], tools=None) -> int:
+        try:
+            norm_msgs = _normalize_messages_for_template(messages)
+            if self._tokenizer is not None:
+                text = self._tokenizer.apply_chat_template(
+                    norm_msgs, tools=tools, tokenize=False, add_generation_prompt=True,
+                )
+                return len(self._tokenizer(text, add_special_tokens=False)["input_ids"])
+            fallback_text = json.dumps(norm_msgs, ensure_ascii=False)
+            return max(1, len(fallback_text) // 4)
+        except Exception:
+            try:
+                fallback_text = json.dumps(messages, ensure_ascii=False)
+                return max(1, len(fallback_text) // 4)
+            except Exception:
+                return 0
+
+    def _build_summary_system_block(self, summary_text: str) -> str:
+        return (
+            "## Conversation Summary\n"
+            "Use this summary as compressed history for earlier turns that were omitted.\n"
+            f"{summary_text.strip()}"
+        )
+
+    def _with_context_summary(
+        self,
+        sys_msgs: list[dict],
+        kept_non_sys: list[dict],
+        summary_text: str,
+    ) -> list[dict]:
+        summary_block = self._build_summary_system_block(summary_text)
+        base = list(sys_msgs)
+        if base:
+            existing = _flatten_message_content(base[0].get("content", "")).strip()
+            merged = f"{existing}\n\n{summary_block}" if existing else summary_block
+            base[0] = {**base[0], "content": merged}
+        else:
+            base = [{"role": "system", "content": summary_block}]
+        return base + list(kept_non_sys)
+
+    async def _summarize_dropped_context(
+        self,
+        session_id: str,
+        dropped_messages: list[dict],
+        latest_instruction: str,
+    ) -> str:
+        existing_summary = self._session_context_summaries.get(session_id, "").strip()
+        rendered_messages = _render_context_messages(
+            dropped_messages,
+            max_chars=max(2000, int(self.config.context_summary_max_chars * 2)),
+        )
+        if not rendered_messages and existing_summary:
+            return existing_summary
+        prompt_parts = []
+        if latest_instruction:
+            prompt_parts.append(f"Latest user instruction:\n{latest_instruction}")
+        if existing_summary:
+            prompt_parts.append(f"Existing compressed summary:\n{existing_summary}")
+        prompt_parts.append(f"Older conversation turns to compress:\n{rendered_messages}")
+        prompt_parts.append(
+            f"Keep the final summary under {self.config.context_summary_max_chars} characters.",
+        )
+        try:
+            summary = await asyncio.to_thread(
+                run_context_summary_llm,
+                [{"role": "user", "content": "\n\n".join(prompt_parts)}],
+                self.config.context_summary_api_key,
+                self.config.context_summary_api_base,
+                self.config.context_summary_model_id,
+                self.config.context_summary_max_completion_tokens,
+            )
+        except Exception as e:
+            logger.warning("[OpenClaw] context summarization failed for session=%s: %s", session_id, e)
+            return existing_summary
+        summary = (summary or "").strip()
+        if len(summary) > self.config.context_summary_max_chars:
+            summary = summary[: self.config.context_summary_max_chars].rstrip()
+        if summary:
+            self._session_context_summaries[session_id] = summary
+        return summary or existing_summary
+
+    async def _compress_messages_with_summary(
+        self,
+        session_id: str,
+        messages: list[dict],
+        tools,
+        max_prompt_tokens: int,
+    ) -> list[dict]:
+        current_tokens = self._estimate_prompt_tokens(messages, tools)
+        if current_tokens <= max_prompt_tokens:
+            return messages
+        if not self.config.context_summary_enabled:
+            return self._truncate_messages(messages, tools, max_prompt_tokens)
+
+        sys_msgs = [m for m in messages if m.get("role") == "system"]
+        non_sys = [m for m in messages if m.get("role") != "system"]
+        if len(non_sys) <= 1:
+            return self._truncate_messages(messages, tools, max_prompt_tokens)
+
+        recent_keep = max(1, min(len(non_sys), self.config.context_summary_recent_messages))
+        dropped = non_sys[:-recent_keep]
+        if not dropped:
+            return self._truncate_messages(messages, tools, max_prompt_tokens)
+
+        summary_text = await self._summarize_dropped_context(
+            session_id,
+            dropped,
+            _extract_last_user_instruction(messages),
+        )
+        if not summary_text:
+            return self._truncate_messages(messages, tools, max_prompt_tokens)
+
+        kept: list[dict] = []
+        for msg in reversed(non_sys):
+            candidate_kept = [msg] + list(reversed(kept))
+            candidate = self._with_context_summary(sys_msgs, candidate_kept, summary_text)
+            if self._estimate_prompt_tokens(candidate, tools) <= max_prompt_tokens:
+                kept.append(msg)
+            elif not kept:
+                kept.append(msg)
+                break
+            else:
+                break
+
+        summarized = self._with_context_summary(sys_msgs, list(reversed(kept)), summary_text)
+        if self._estimate_prompt_tokens(summarized, tools) > max_prompt_tokens:
+            fallback_summary = summary_text[: max(512, self.config.context_summary_max_chars // 2)].rstrip()
+            summarized = self._with_context_summary(sys_msgs, list(reversed(kept)), fallback_summary)
+            if self._estimate_prompt_tokens(summarized, tools) > max_prompt_tokens:
+                summarized = self._truncate_messages(summarized, tools, max_prompt_tokens)
+
+        logger.info(
+            "[OpenClaw] context summarized for session=%s tokens=%d→%d limit=%d",
+            session_id,
+            current_tokens,
+            self._estimate_prompt_tokens(summarized, tools),
+            max_prompt_tokens,
+        )
+        return summarized
 
     # ------------------------------------------------------------------ #
     # Skill injection                                                      #
