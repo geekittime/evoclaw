@@ -161,7 +161,11 @@ class MetaClawTrainer:
                 skills_dir=self.config.skills_dir,
                 retrieval_mode=self.config.retrieval_mode,
                 embedding_model_path=self.config.embedding_model_path,
-                task_specific_top_k=self.config.task_specific_top_k
+                task_specific_top_k=self.config.task_specific_top_k,
+                adaptive_routing_enabled=self.config.adaptive_skill_routing_enabled,
+                stats_path=self.config.adaptive_skill_stats_path,
+                feedback_weight=self.config.adaptive_skill_feedback_weight,
+                relevance_weight=self.config.adaptive_skill_relevance_weight,
             )
             logger.info("[Trainer] SkillManager ready: %s", self.skill_manager.get_skill_count())
 

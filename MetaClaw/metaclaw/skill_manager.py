@@ -27,8 +27,10 @@ Valid categories: general, coding, research, data_analysis, security,
 """
 
 import glob
+import json
 import logging
 import os
+import time
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -154,6 +156,10 @@ class SkillManager:
         retrieval_mode: str = "template",
         embedding_model_path: Optional[str] = None,
         task_specific_top_k: Optional[int] = None,
+        adaptive_routing_enabled: bool = False,
+        stats_path: Optional[str] = None,
+        feedback_weight: float = 0.35,
+        relevance_weight: float = 1.0,
     ):
         if retrieval_mode not in ("template", "embedding"):
             raise ValueError(
@@ -166,9 +172,14 @@ class SkillManager:
         self.retrieval_mode = retrieval_mode
         self.embedding_model_path = embedding_model_path or "Qwen/Qwen3-Embedding-0.6B"
         self.task_specific_top_k = task_specific_top_k
+        self.adaptive_routing_enabled = adaptive_routing_enabled
+        self.stats_path = stats_path or ""
+        self.feedback_weight = feedback_weight
+        self.relevance_weight = relevance_weight
 
         self._embedding_model = None
         self._skill_embeddings_cache: Optional[Dict] = None
+        self._skill_stats: Dict[str, Dict[str, Any]] = self._load_skill_stats()
 
         # Monotonically-increasing counter. Incremented each time new skills are
         # successfully added via add_skills(). Used by the RL trainer to discard
@@ -189,6 +200,67 @@ class SkillManager:
 
         if retrieval_mode == "embedding":
             self._compute_skill_embeddings()
+
+    def _load_skill_stats(self) -> Dict[str, Dict[str, Any]]:
+        if not self.stats_path:
+            return {}
+        try:
+            with open(self.stats_path, encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    def _save_skill_stats(self) -> None:
+        if not self.stats_path:
+            return
+        try:
+            parent = os.path.dirname(self.stats_path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(self.stats_path, "w", encoding="utf-8") as f:
+                json.dump(self._skill_stats, f, ensure_ascii=False, indent=2)
+        except OSError as e:
+            logger.warning("[SkillManager] could not write skill stats %s: %s", self.stats_path, e)
+
+    def _get_skill_stat(self, name: str) -> Dict[str, Any]:
+        return self._skill_stats.setdefault(
+            name,
+            {
+                "selected": 0,
+                "positive_feedback": 0,
+                "negative_feedback": 0,
+                "last_selected_at": 0.0,
+                "last_feedback_at": 0.0,
+            },
+        )
+
+    def record_skill_selection(self, skill_names: list[str]) -> None:
+        changed = False
+        now = time.time()
+        for name in skill_names:
+            if not name:
+                continue
+            stat = self._get_skill_stat(name)
+            stat["selected"] = int(stat.get("selected", 0) or 0) + 1
+            stat["last_selected_at"] = now
+            changed = True
+        if changed:
+            self._save_skill_stats()
+
+    def record_feedback(self, skill_names: list[str], rating: str) -> None:
+        changed = False
+        now = time.time()
+        field = "positive_feedback" if rating == "good" else "negative_feedback"
+        for name in skill_names:
+            if not name:
+                continue
+            stat = self._get_skill_stat(name)
+            stat[field] = int(stat.get(field, 0) or 0) + 1
+            stat["last_feedback_at"] = now
+            changed = True
+        if changed:
+            self._save_skill_stats()
 
     # ------------------------------------------------------------------ #
     # Loading                                                              #
@@ -347,7 +419,10 @@ class SkillManager:
                 else all_task
             )
 
-        return general + task_skills + common_mistakes
+        results = general + task_skills + common_mistakes
+        if self.adaptive_routing_enabled:
+            results = self._rerank_skills(task_description, results, top_k=max(top_k + 5, len(results)))
+        return results
 
     def retrieve_relevant(
         self,
@@ -408,7 +483,10 @@ class SkillManager:
                 scored.append((relevance, skill))
 
         scored.sort(key=lambda x: x[0], reverse=True)
-        return [s[1] for s in scored[:top_k]]
+        results = [s[1] for s in scored[:top_k]]
+        if self.adaptive_routing_enabled:
+            results = self._rerank_skills(task_description, results, top_k=top_k)
+        return results
 
     def format_for_conversation(self, skills: list[dict]) -> str:
         """Format skill dicts into a block for insertion into a system prompt."""
@@ -426,6 +504,54 @@ class SkillManager:
                 lines.append("")
                 lines.append(content)
         return "\n".join(lines)
+
+    def _skill_feedback_score(self, skill: dict) -> float:
+        name = skill.get("name", "").strip()
+        if not name:
+            return 0.0
+        stat = self._skill_stats.get(name, {})
+        pos = float(stat.get("positive_feedback", 0) or 0.0)
+        neg = float(stat.get("negative_feedback", 0) or 0.0)
+        return (pos - neg) / max(pos + neg + 2.0, 2.0)
+
+    def _skill_relevance_score(self, task_description: str, skill: dict) -> float:
+        task_terms = self._tokenize_text(task_description)
+        if not task_terms:
+            return 0.0
+        skill_text = " ".join([
+            skill.get("name", ""),
+            skill.get("description", ""),
+            skill.get("content", "")[:400],
+        ])
+        skill_terms = self._tokenize_text(skill_text)
+        if not skill_terms:
+            return 0.0
+        overlap = len(task_terms & skill_terms)
+        return overlap / max(min(len(task_terms), len(skill_terms)), 1)
+
+    def _rerank_skills(self, task_description: str, skills: list[dict], top_k: int) -> list[dict]:
+        if not skills:
+            return skills
+        unique: list[dict] = []
+        seen: set[str] = set()
+        for skill in skills:
+            name = skill.get("name", "").strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            unique.append(skill)
+        scored: list[tuple[float, dict]] = []
+        for idx, skill in enumerate(unique):
+            relevance = self._skill_relevance_score(task_description, skill)
+            feedback = self._skill_feedback_score(skill)
+            score = (
+                self.relevance_weight * relevance
+                + self.feedback_weight * feedback
+                - idx * 1e-4
+            )
+            scored.append((score, skill))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [item[1] for item in scored[:top_k]]
 
     def add_skill(self, skill: dict) -> bool:
         """
@@ -510,6 +636,8 @@ class SkillManager:
 
         if not changed:
             changed = self.add_skill(skill)
+            if changed:
+                self.generation += 1
         else:
             self._skill_embeddings_cache = None
             self._write_skill_md(skill)

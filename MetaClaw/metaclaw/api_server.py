@@ -145,8 +145,8 @@ _KIMI_TOOL_CALL_RE = re.compile(
 _QWEN_TOOL_CALL_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL)
 _INLINE_FEEDBACK_PATTERNS = [
     re.compile(r"^/(?:feedback|fb)\s+(good|bad)\s*(.*)$", re.IGNORECASE),
-    re.compile(r"^(?:反馈|回馈)(好|不好|坏)[:：\s-]*(.*)$"),
-    re.compile(r"^上次(好|不好|坏)[:：\s-]*(.*)$"),
+    re.compile("^(?:反馈|回馈)(好|不好|坏)[:：\\s-]*(.*)$"),
+    re.compile("^上次(好|不好|坏)[:：\\s-]*(.*)$"),
 ]
 
 def _normalize_tool_name(raw_name: str, args_raw: str) -> str:
@@ -466,18 +466,56 @@ def _parse_inline_feedback(text: str) -> tuple[str, str] | None:
     raw = (text or "").strip()
     if not raw:
         return None
+    rating_aliases = {
+        "好": "good",
+        "不好": "bad",
+        "坏": "bad",
+    }
     for pattern in _INLINE_FEEDBACK_PATTERNS:
         match = pattern.match(raw)
         if not match:
             continue
         rating = (match.group(1) or "").strip().lower()
-        if rating in {"不好", "坏"}:
-            rating = "bad"
-        elif rating == "好":
-            rating = "good"
+        rating = rating_aliases.get(rating, rating)
         feedback_text = (match.group(2) or "").strip()
         return rating, feedback_text
     return None
+
+
+def _extract_preference_clauses(text: str) -> list[str]:
+    raw = (text or "").strip()
+    if not raw:
+        return []
+    patterns = [
+        r"(?:请|麻烦)?尽量[^。；;\n]+",
+        r"(?:请|麻烦)?不要[^。；;\n]+",
+        r"(?:请|麻烦)?别[^。；;\n]+",
+        r"(?:以后|后面)请[^。；;\n]+",
+        r"(?:我更希望|我希望|我偏好|我更喜欢)[^。；;\n]+",
+        r"(?:回答时|回复时)[^。；;\n]+",
+        r"(?:please|prefer|i prefer|i want|next time please|avoid|don't)\s+[^.;\n]+",
+    ]
+    results: list[str] = []
+    for pattern in patterns:
+        for match in re.finditer(pattern, raw, flags=re.IGNORECASE):
+            clause = match.group(0).strip()
+            if len(clause) >= 4 and clause not in results:
+                results.append(clause)
+    return results[:4]
+
+
+def _resolve_record_path(record_dir: str, path: str) -> str:
+    if not path:
+        return path
+    if os.path.isabs(path):
+        return path
+    normalized_record_dir = os.path.normpath(record_dir or ".")
+    normalized_path = os.path.normpath(path)
+    if normalized_path == normalized_record_dir:
+        return normalized_path
+    if normalized_path.startswith(normalized_record_dir + os.sep):
+        return normalized_path
+    return os.path.join(normalized_record_dir, normalized_path)
 
 
 def _extract_logprobs_from_chat_response(choice: dict[str, Any]) -> list[float]:
@@ -597,6 +635,8 @@ class MetaClawAPIServer:
         self._session_effective: dict[str, int] = {}              # at-least-one guarantee
         self._session_context_summaries: dict[str, str] = {}
         self._feedback_by_session: dict[str, list[dict[str, Any]]] = {}
+        self._latest_injected_skills: dict[str, list[str]] = {}
+        self._user_profiles: dict[str, list[str]] = self._load_user_profiles()
         # Buffer turns per session for skill evolution (cleared on evolution trigger)
         self._session_turns: dict[str, list] = {}
         # Buffer turns per session for memory ingestion (only cleared on session_done)
@@ -623,20 +663,18 @@ class MetaClawAPIServer:
         self._prm_record_file = ""
         if config.record_enabled:
             os.makedirs(config.record_dir, exist_ok=True)
-            self._record_file = os.path.join(config.record_dir, config.record_enriched_file)
+            self._record_file = _resolve_record_path(config.record_dir, config.record_enriched_file)
             self._enriched_record_file = self._record_file
-            self._openclaw_rl_record_file = os.path.join(
+            self._openclaw_rl_record_file = _resolve_record_path(
                 config.record_dir, config.record_openclaw_rl_file,
             )
-            self._prm_record_file = os.path.join(config.record_dir, "prm_scores.jsonl")
-            self._feedback_file = config.feedback_history_path
-            if not os.path.isabs(self._feedback_file):
-                self._feedback_file = os.path.join(config.record_dir, self._feedback_file)
-            with open(self._record_file, "w"):
+            self._prm_record_file = _resolve_record_path(config.record_dir, "prm_scores.jsonl")
+            self._feedback_file = _resolve_record_path(config.record_dir, config.feedback_history_path)
+            with open(self._record_file, "a", encoding="utf-8"):
                 pass
-            with open(self._openclaw_rl_record_file, "w"):
+            with open(self._openclaw_rl_record_file, "a", encoding="utf-8"):
                 pass
-            with open(self._prm_record_file, "w"):
+            with open(self._prm_record_file, "a", encoding="utf-8"):
                 pass
             with open(self._feedback_file, "a", encoding="utf-8"):
                 pass
@@ -1122,6 +1160,36 @@ class MetaClawAPIServer:
         except OSError as e:
             logger.warning("[OpenClaw] failed to write feedback record: %s", e)
 
+    def _load_user_profiles(self) -> dict[str, list[str]]:
+        path = _resolve_record_path(self.config.record_dir, self.config.user_profile_path)
+        if not path:
+            return {}
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                return {}
+            normalized: dict[str, list[str]] = {}
+            for key, value in data.items():
+                if isinstance(value, list):
+                    normalized[str(key)] = [str(v).strip() for v in value if str(v).strip()]
+            return normalized
+        except Exception:
+            return {}
+
+    def _save_user_profiles(self) -> None:
+        path = _resolve_record_path(self.config.record_dir, self.config.user_profile_path)
+        if not path:
+            return
+        try:
+            parent = os.path.dirname(path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(self._user_profiles, f, ensure_ascii=False, indent=2)
+        except OSError as e:
+            logger.warning("[OpenClaw] failed to write user profile file: %s", e)
+
     def _load_record_for_feedback(self, session_id: str, turn: int | None) -> dict[str, Any] | None:
         pending = self._pending_records.get(session_id)
         if pending is not None and (turn is None or int(pending.get("turn", 0) or 0) == turn):
@@ -1185,6 +1253,7 @@ class MetaClawAPIServer:
             return
         instruction_text = _extract_last_user_instruction(messages)
         context_summary = _extract_context_summary_text(messages)
+        injected_skills = list(self._latest_injected_skills.get(session_id, []))
         self._pending_records[session_id] = {
             "schema": "metaclaw.conversation_record.v2",
             "source": "metaclaw",
@@ -1198,6 +1267,7 @@ class MetaClawAPIServer:
             "tool_calls": tool_calls or None,
             "context_summary": context_summary,
             "context_summary_used": bool(context_summary),
+            "injected_skills": injected_skills,
         }
 
     def _append_prm_record(self, session_id: str, turn_num: int,
@@ -1343,6 +1413,7 @@ class MetaClawAPIServer:
         messages = body.get("messages")
         if not isinstance(messages, list) or not messages:
             raise HTTPException(status_code=400, detail="messages must be a non-empty list")
+        self._latest_injected_skills.pop(session_id, None)
         inline_feedback = None
         latest_user_text = _extract_last_user_instruction(messages)
         if turn_type == "main" and self.config.feedback_enabled and latest_user_text:
@@ -1420,9 +1491,12 @@ class MetaClawAPIServer:
         effective_memory_scope = memory_scope or self._get_memory_scope(session_id)
         if effective_memory_scope:
             self._session_memory_scopes[session_id] = effective_memory_scope
+        self._update_user_profile(session_id, effective_memory_scope, latest_user_text)
 
         # Inject memory and skills into system message for main turns
         if turn_type == "main":
+            if self.config.user_profile_enabled:
+                messages = self._inject_user_profile(messages, session_id, effective_memory_scope)
             if self.config.feedback_enabled:
                 messages = self._inject_important_skill(messages)
             if (
@@ -1431,12 +1505,12 @@ class MetaClawAPIServer:
                 and self.config.synergy_enabled
             ):
                 messages = await self._inject_augmentation(
-                    messages, scope_id=effective_memory_scope,
+                    messages, scope_id=effective_memory_scope, session_id=session_id,
                 )
             elif self.memory_manager:
                 messages = await self._inject_memory(messages, scope_id=effective_memory_scope)
             elif self.skill_manager:
-                messages = self._inject_skills(messages)
+                messages = self._inject_skills(messages, session_id=session_id)
         if cached_system:
             logger.info(
                 "[OpenClaw] system prompt cached len=%d",
@@ -1532,6 +1606,7 @@ class MetaClawAPIServer:
                     self._turn_counts.pop(session_id, None)
                     self._teacher_tasks.pop(session_id, None)
                     self._session_context_summaries.pop(session_id, None)
+                    self._latest_injected_skills.pop(session_id, None)
                     logger.info("[OpenClaw] session=%s done → cleaned up (effective_samples=%d)", session_id, eff)
                     memory_turns = self._session_memory_turns.pop(session_id, [])
                     if memory_turns and self.memory_manager is not None and self.config.memory_auto_extract:
@@ -1554,6 +1629,7 @@ class MetaClawAPIServer:
                     self._turn_counts.pop(session_id, None)
                     self._teacher_tasks.pop(session_id, None)
                     self._session_context_summaries.pop(session_id, None)
+                    self._latest_injected_skills.pop(session_id, None)
                     logger.info("[OpenClaw] session=%s done (manual_trigger: memory buffer preserved, %d turns)",
                                 session_id, len(self._session_memory_turns.get(session_id, [])))
                 output["session_id"] = session_id
@@ -1645,6 +1721,7 @@ class MetaClawAPIServer:
             self._turn_counts.pop(session_id, None)
             self._teacher_tasks.pop(session_id, None)
             self._session_context_summaries.pop(session_id, None)
+            self._latest_injected_skills.pop(session_id, None)
             logger.info("[OpenClaw] session=%s done → cleaned up (effective_samples=%d)", session_id, eff)
             # session done: trigger memory ingestion from dedicated memory buffer
             memory_turns = self._session_memory_turns.pop(session_id, [])
@@ -1670,6 +1747,7 @@ class MetaClawAPIServer:
             self._turn_counts.pop(session_id, None)
             self._teacher_tasks.pop(session_id, None)
             self._session_context_summaries.pop(session_id, None)
+            self._latest_injected_skills.pop(session_id, None)
             logger.info("[OpenClaw] session=%s done (manual_trigger: memory buffer preserved, %d turns)",
                         session_id, len(self._session_memory_turns.get(session_id, [])))
 
@@ -1957,6 +2035,47 @@ class MetaClawAPIServer:
             messages.insert(0, {"role": "system", "content": skill_text})
         return messages
 
+    def _profile_key(self, session_id: str, scope_id: str = "") -> str:
+        return base_scope(scope_id) if scope_id else session_id
+
+    def _update_user_profile(self, session_id: str, scope_id: str, latest_user_text: str) -> None:
+        if not self.config.user_profile_enabled or not latest_user_text:
+            return
+        key = self._profile_key(session_id, scope_id)
+        clauses = _extract_preference_clauses(latest_user_text)
+        if not clauses:
+            return
+        existing = self._user_profiles.setdefault(key, [])
+        changed = False
+        for clause in clauses:
+            if clause not in existing:
+                existing.append(clause)
+                changed = True
+        if len(existing) > self.config.user_profile_max_entries:
+            del existing[:-self.config.user_profile_max_entries]
+            changed = True
+        if changed:
+            self._save_user_profiles()
+
+    def _inject_user_profile(self, messages: list[dict], session_id: str, scope_id: str) -> list[dict]:
+        if not self.config.user_profile_enabled:
+            return messages
+        key = self._profile_key(session_id, scope_id)
+        entries = self._user_profiles.get(key, [])
+        if not entries:
+            return messages
+        profile_block = "## User Preferences\n" + "\n".join(f"- {item}" for item in entries[-self.config.user_profile_max_entries:])
+        messages = list(messages)
+        sys_indices = [i for i, m in enumerate(messages) if m.get("role") == "system"]
+        if sys_indices:
+            idx = sys_indices[0]
+            existing = _flatten_message_content(messages[idx].get("content", ""))
+            if "## User Preferences" not in existing:
+                messages[idx] = {**messages[idx], "content": existing + "\n\n" + profile_block}
+        else:
+            messages.insert(0, {"role": "system", "content": profile_block})
+        return messages
+
     async def _update_important_skill_from_feedback(
         self,
         record: dict[str, Any],
@@ -2033,9 +2152,12 @@ class MetaClawAPIServer:
             "rating": rating,
             "feedback": feedback_text,
             "instruction_text": record.get("instruction_text", ""),
+            "injected_skills": record.get("injected_skills", []),
         }
         self._feedback_by_session.setdefault(session_id, []).append(feedback_record)
         self._append_feedback_record(feedback_record)
+        if self.skill_manager:
+            self.skill_manager.record_feedback(record.get("injected_skills", []) or [], rating)
 
         updated_skill = None
         if rating == "bad":
@@ -2273,7 +2395,7 @@ class MetaClawAPIServer:
             )
         return result
 
-    def _inject_skills(self, messages: list[dict]) -> list[dict]:
+    def _inject_skills(self, messages: list[dict], session_id: str = "") -> list[dict]:
         """Prepend skill guidance to the system message."""
         if not self.skill_manager:
             return messages
@@ -2292,6 +2414,7 @@ class MetaClawAPIServer:
             for s in skills
             if isinstance(s, dict)
         ]
+        self.skill_manager.record_skill_selection(skill_names)
         logger.info(
             "[SkillManager] injecting %d skills: %s",
             len(skill_names),
@@ -2309,6 +2432,8 @@ class MetaClawAPIServer:
         else:
             messages.insert(0, {"role": "system", "content": skill_text})
 
+        if session_id:
+            self._latest_injected_skills[session_id] = skill_names
         return messages
 
     # ------------------------------------------------------------------ #
@@ -2674,6 +2799,7 @@ class MetaClawAPIServer:
         self,
         messages: list[dict],
         scope_id: str = "",
+        session_id: str = "",
     ) -> list[dict]:
         """Coordinated injection of both Memory and Skill.
 
@@ -2700,6 +2826,11 @@ class MetaClawAPIServer:
         skills = self.skill_manager.retrieve_relevant(
             task_desc, top_k=min(self.config.skill_top_k, 5),
         )
+        skill_names = [
+            s.get("name", s.get("id", "unknown_skill"))
+            for s in skills
+            if isinstance(s, dict)
+        ]
 
         # Need >= 2 relevant skills for synergy template; otherwise plain memory.
         if len(skills) < 2:
@@ -2714,7 +2845,7 @@ class MetaClawAPIServer:
         )
 
         if not memories:
-            return self._inject_skills(messages)
+            return self._inject_skills(messages, session_id=session_id)
 
         # Dedup procedural memories that overlap with matched skills.
         memories = self._dedup_memory_against_skills(
@@ -2723,7 +2854,7 @@ class MetaClawAPIServer:
 
         memory_text = self.memory_manager.render_for_prompt(memories)
         if not memory_text:
-            return self._inject_skills(messages)
+            return self._inject_skills(messages, session_id=session_id)
 
         # --- 3. Build skill-aware structured template (no full skill injection) ---
         # Extract compact process steps from matched skills.
@@ -2771,5 +2902,10 @@ class MetaClawAPIServer:
             messages[idx] = {**messages[idx], "content": existing + "\n\n" + augmented_text}
         else:
             messages.insert(0, {"role": "system", "content": augmented_text})
+
+        if skill_names:
+            self.skill_manager.record_skill_selection(skill_names)
+            if session_id:
+                self._latest_injected_skills[session_id] = skill_names
 
         return messages
