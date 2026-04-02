@@ -97,6 +97,14 @@ class MetaClawConfig:
     # ------------------------------------------------------------------ #
     max_context_tokens: int = 20000            # hard cap on prompt token count; must match
                                               # Tinker's max_seq_len minus headroom for response
+    context_summary_enabled: bool = True
+    context_summary_trigger_ratio: float = 0.85
+    context_summary_recent_messages: int = 8
+    context_summary_max_chars: int = 4000
+    context_summary_max_completion_tokens: int = 900
+    context_summary_model_id: str = "deepseek-chat"
+    context_summary_api_base: str = "https://api.deepseek.com/v1"
+    context_summary_api_key: str = "sk-3b5348120d3c47dbbc5efb1c32606e52"
 
     # ------------------------------------------------------------------ #
     # API Server                                                          #
@@ -108,6 +116,8 @@ class MetaClawConfig:
     api_key: str = ""                         # Optional bearer token check
     record_enabled: bool = True
     record_dir: str = "records/"
+    record_openclaw_rl_file: str = "openclaw_rl_records.jsonl"
+    record_enriched_file: str = "conversations.jsonl"
 
     # ------------------------------------------------------------------ #
     # Programmatic task rollout (Qwen3-native, no OpenClaw TUI needed)  #

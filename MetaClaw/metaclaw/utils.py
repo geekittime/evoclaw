@@ -20,6 +20,17 @@ _COMPRESSION_INSTRUCTION = (
     "Output only the rewritten system prompt text."
 )
 
+_CONTEXT_SUMMARY_INSTRUCTION = (
+    "You are summarizing a long-running agent conversation for future turns. "
+    "Produce a compact continuation summary that can replace older raw context in the prompt. "
+    "Preserve: user goals, constraints, important facts, files/paths, tool results, "
+    "decisions already made, unresolved subproblems, and any safety or execution caveats. "
+    "Do not restate boilerplate. Do not fabricate missing details. "
+    "Prefer short bullet points under these headings when applicable: "
+    "User Goal, Confirmed Facts, Work Completed, Important Outputs, Open Issues, Next Best Step. "
+    "Output only the summary text."
+)
+
 
 def _get_llm_provider() -> str:
     """Detect whether to use Bedrock or OpenAI based on config/env."""
@@ -100,10 +111,47 @@ def _run_llm_openai(messages):
     client = OpenAI(**client_kwargs)
 
     rewrite_messages = [{"role": "system", "content": _COMPRESSION_INSTRUCTION}, *messages]
+    response = _run_openai_chat_completion(
+        rewrite_messages,
+        api_key=api_key,
+        base_url=base_url,
+        model_id=model_id,
+        max_completion_tokens=2500,
+    )
+    return response
+
+
+def run_context_summary_llm(
+    messages,
+    api_key: str = "",
+    base_url: str = "",
+    model_id: str = "",
+    max_completion_tokens: int = 900,
+):
+    client_api_key = api_key or os.environ.get("DEEPSEEK_API_KEY", "")
+    client_base_url = base_url or os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
+    client_model_id = model_id or os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
+    rewrite_messages = [{"role": "system", "content": _CONTEXT_SUMMARY_INSTRUCTION}, *messages]
+    return _run_openai_chat_completion(
+        rewrite_messages,
+        api_key=client_api_key,
+        base_url=client_base_url,
+        model_id=client_model_id,
+        max_completion_tokens=max_completion_tokens,
+    )
+
+
+def _run_openai_chat_completion(
+    messages,
+    api_key: str,
+    base_url: str,
+    model_id: str,
+    max_completion_tokens: int,
+):
     response = client.chat.completions.create(
         model=model_id,
         messages=rewrite_messages,
-        max_completion_tokens=2500,
+        max_completion_tokens=max_completion_tokens,
     )
     return response.choices[0].message.content
 
