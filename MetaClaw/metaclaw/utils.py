@@ -106,9 +106,6 @@ def _run_llm_openai(messages):
         api_key = prm_api_key or os.environ.get("OPENAI_API_KEY", "")
         base_url = prm_url or os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
     model_id = prm_model or os.environ.get("PRM_MODEL", "gpt-5.2")
-    client_kwargs: dict[str, Any] = {"api_key": api_key}
-    client_kwargs["base_url"] = base_url
-    client = OpenAI(**client_kwargs)
 
     rewrite_messages = [{"role": "system", "content": _COMPRESSION_INSTRUCTION}, *messages]
     response = _run_openai_chat_completion(
@@ -148,9 +145,12 @@ def _run_openai_chat_completion(
     model_id: str,
     max_completion_tokens: int,
 ):
+    client_kwargs: dict[str, Any] = {"api_key": api_key}
+    client_kwargs["base_url"] = base_url
+    client = OpenAI(**client_kwargs)
     response = client.chat.completions.create(
         model=model_id,
-        messages=rewrite_messages,
+        messages=messages,
         max_completion_tokens=max_completion_tokens,
     )
     return response.choices[0].message.content
