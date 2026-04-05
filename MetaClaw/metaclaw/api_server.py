@@ -159,7 +159,7 @@ _QWEN_TOOL_CALL_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL
 _INLINE_FEEDBACK_PATTERNS = [
     re.compile(r"^/(?:feedback|fb|fd)\s+(good|bad)\s*(.*)$", re.IGNORECASE),
 ]
-_INLINE_APPROVAL_RE = re.compile(r"^/(approve|reject)\s*([A-Za-z0-9_-]+)?\s*$", re.IGNORECASE)
+_INLINE_APPROVAL_RE = re.compile(r"^(?:/)?(approve|reject)\s*([A-Za-z0-9_-]+)?\s*$", re.IGNORECASE)
 
 def _normalize_tool_name(raw_name: str, args_raw: str) -> str:
     """
@@ -1964,6 +1964,7 @@ class MetaClawAPIServer:
                 "如果有多个待处理的批准，你也可以使用 `/approve <approval_id>` 或 `/reject <approval_id>`.\n"
                 + self._summarize_sandbox_decisions(decisions)
             )
+            pending_text = pending_text.replace("/approve", "approve").replace("/reject", "reject")
             pending_msg = {
                 "role": "assistant",
                 "content": pending_text,
