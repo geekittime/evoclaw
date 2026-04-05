@@ -42,6 +42,7 @@ from .sandbox import (
     SandboxAuditLogger,
     SandboxDecision,
     SandboxPolicyEngine,
+    SandboxWhitelistManager,
 )
 from .skill_manager import SkillManager
 from .utils import (
@@ -535,6 +536,35 @@ def _parse_inline_approval(text: str) -> tuple[str, str] | None:
     return action, approval_id
 
 
+def _parse_inline_whitelist(text: str) -> tuple[str, str, str] | None:
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    lowered = raw.lower()
+    if lowered in {"/whitelist", "/allowlist"}:
+        return "list", "", ""
+    match = re.match(r"^/(allow|unallow)\s+(command|path)\s+(.+?)\s*$", raw, re.IGNORECASE)
+    if match:
+        return (
+            str(match.group(1) or "").strip().lower(),
+            str(match.group(2) or "").strip().lower(),
+            str(match.group(3) or "").strip(),
+        )
+    match = re.match(
+        r"^/whitelist\s+(add|remove)\s+(command|path)\s+(.+?)\s*$",
+        raw,
+        re.IGNORECASE,
+    )
+    if match:
+        action = "allow" if str(match.group(1) or "").strip().lower() == "add" else "unallow"
+        return (
+            action,
+            str(match.group(2) or "").strip().lower(),
+            str(match.group(3) or "").strip(),
+        )
+    return None
+
+
 def _extract_preference_clauses(text: str) -> list[str]:
     raw = (text or "").strip()
     if not raw:
@@ -709,10 +739,12 @@ class MetaClawAPIServer:
         self._user_profiles: dict[str, list[str]] = self._load_user_profiles()
         self._task_briefs: dict[str, dict[str, list[str]]] = self._load_task_briefs()
         self._latest_session_reports: dict[str, dict[str, Any]] = {}
+        self._sandbox_whitelist: SandboxWhitelistManager | None = None
         self._sandbox_policy = (
             SandboxPolicyEngine(
                 command_policy_enabled=config.sandbox_command_policy_enabled,
                 path_policy_enabled=config.sandbox_path_policy_enabled,
+                whitelist_manager=None,
             )
             if config.sandbox_enabled
             else None
@@ -747,6 +779,7 @@ class MetaClawAPIServer:
         self._sandbox_audit_file = ""
         self._sandbox_approval_state_file = ""
         self._sandbox_approval_history_file = ""
+        self._sandbox_whitelist_file = ""
         if config.record_enabled:
             os.makedirs(config.record_dir, exist_ok=True)
             self._record_file = _resolve_record_path(config.record_dir, config.record_enriched_file)
@@ -764,6 +797,9 @@ class MetaClawAPIServer:
             self._sandbox_approval_history_file = _resolve_record_path(
                 config.record_dir, config.sandbox_approval_history_path,
             )
+            self._sandbox_whitelist_file = _resolve_record_path(
+                config.record_dir, config.sandbox_whitelist_path,
+            )
             with open(self._record_file, "a", encoding="utf-8"):
                 pass
             with open(self._openclaw_rl_record_file, "a", encoding="utf-8"):
@@ -776,11 +812,15 @@ class MetaClawAPIServer:
                 pass
             if self.config.sandbox_audit_enabled:
                 self._sandbox_audit = SandboxAuditLogger(self._sandbox_audit_file)
+            if self.config.sandbox_enabled:
+                self._sandbox_whitelist = SandboxWhitelistManager(self._sandbox_whitelist_file)
             if self.config.sandbox_approval_enabled:
                 self._sandbox_approvals = SandboxApprovalManager(
                     self._sandbox_approval_state_file,
                     self._sandbox_approval_history_file,
                 )
+            if self._sandbox_policy is not None:
+                self._sandbox_policy.whitelist_manager = self._sandbox_whitelist
 
         if self.config.feedback_enabled and self.skill_manager is not None:
             self._ensure_important_skill_exists()
@@ -1215,6 +1255,75 @@ class MetaClawAPIServer:
             return JSONResponse(content={
                 "pending": owner._sandbox_approvals.list_pending(session_id=session_id.strip()),
             })
+
+        @app.get("/v1/sandbox/whitelist")
+        async def sandbox_whitelist_get(
+            request: Request,
+            authorization: Optional[str] = Header(default=None),
+        ):
+            owner: MetaClawAPIServer = request.app.state.owner
+            await owner._check_auth(authorization)
+            if owner._sandbox_whitelist is None:
+                raise HTTPException(status_code=503, detail="sandbox whitelist is not enabled")
+            return JSONResponse(content=owner._sandbox_whitelist.snapshot())
+
+        @app.post("/v1/sandbox/whitelist")
+        async def sandbox_whitelist_add(
+            request: Request,
+            authorization: Optional[str] = Header(default=None),
+        ):
+            owner: MetaClawAPIServer = request.app.state.owner
+            await owner._check_auth(authorization)
+            if owner._sandbox_whitelist is None:
+                raise HTTPException(status_code=503, detail="sandbox whitelist is not enabled")
+            body = await request.json()
+            target_type = str(body.get("type", "") or "").strip().lower()
+            value = str(body.get("value", "") or "").strip()
+            if target_type not in {"command", "path"} or not value:
+                raise HTTPException(status_code=400, detail="type must be command/path and value is required")
+            changed = (
+                owner._sandbox_whitelist.add_command(value)
+                if target_type == "command"
+                else owner._sandbox_whitelist.add_path(value)
+            )
+            owner._append_sandbox_audit(
+                "whitelist_updated",
+                session_id="",
+                action="allow",
+                target_type=target_type,
+                value=value,
+                changed=changed,
+            )
+            return JSONResponse(content={"ok": True, "changed": changed, **owner._sandbox_whitelist.snapshot()})
+
+        @app.delete("/v1/sandbox/whitelist")
+        async def sandbox_whitelist_remove(
+            request: Request,
+            authorization: Optional[str] = Header(default=None),
+        ):
+            owner: MetaClawAPIServer = request.app.state.owner
+            await owner._check_auth(authorization)
+            if owner._sandbox_whitelist is None:
+                raise HTTPException(status_code=503, detail="sandbox whitelist is not enabled")
+            body = await request.json()
+            target_type = str(body.get("type", "") or "").strip().lower()
+            value = str(body.get("value", "") or "").strip()
+            if target_type not in {"command", "path"} or not value:
+                raise HTTPException(status_code=400, detail="type must be command/path and value is required")
+            changed = (
+                owner._sandbox_whitelist.remove_command(value)
+                if target_type == "command"
+                else owner._sandbox_whitelist.remove_path(value)
+            )
+            owner._append_sandbox_audit(
+                "whitelist_updated",
+                session_id="",
+                action="unallow",
+                target_type=target_type,
+                value=value,
+                changed=changed,
+            )
+            return JSONResponse(content={"ok": True, "changed": changed, **owner._sandbox_whitelist.snapshot()})
 
         @app.post("/v1/sandbox/approve")
         async def sandbox_approve(
@@ -1662,6 +1771,81 @@ class MetaClawAPIServer:
             extra={"approval_id": record.get("approval_id", "")},
         )
 
+    def _format_whitelist_snapshot(self) -> str:
+        snapshot = self._sandbox_whitelist.snapshot() if self._sandbox_whitelist else {
+            "command_allowlist": [],
+            "path_allowlist": [],
+        }
+        commands = snapshot.get("command_allowlist", [])
+        paths = snapshot.get("path_allowlist", [])
+        lines = ["Sandbox whitelist:"]
+        lines.append("Commands:")
+        if commands:
+            lines.extend(f"- {item}" for item in commands)
+        else:
+            lines.append("- (empty)")
+        lines.append("Paths:")
+        if paths:
+            lines.extend(f"- {item}" for item in paths)
+        else:
+            lines.append("- (empty)")
+        return "\n".join(lines)
+
+    async def _handle_inline_whitelist(
+        self,
+        session_id: str,
+        messages: list[dict],
+        model: str,
+        action: str,
+        target_type: str,
+        value: str,
+    ) -> dict[str, Any]:
+        if self._sandbox_whitelist is None:
+            raise HTTPException(status_code=503, detail="sandbox whitelist is not enabled")
+        raw_text = _extract_last_user_instruction(messages)
+        if session_id in self._pending_records:
+            self._flush_pending_record(session_id, {"role": "user", "content": raw_text})
+        if action == "list":
+            return self._build_assistant_response(
+                session_id=session_id,
+                message=self._format_whitelist_snapshot(),
+                model=model,
+            )
+        if target_type not in {"command", "path"} or not value.strip():
+            raise HTTPException(status_code=400, detail="invalid whitelist command")
+        changed = False
+        normalized_value = value.strip()
+        if action == "allow":
+            if target_type == "command":
+                changed = self._sandbox_whitelist.add_command(normalized_value)
+            else:
+                changed = self._sandbox_whitelist.add_path(normalized_value)
+            verb = "added to"
+        else:
+            if target_type == "command":
+                changed = self._sandbox_whitelist.remove_command(normalized_value)
+            else:
+                changed = self._sandbox_whitelist.remove_path(normalized_value)
+            verb = "removed from"
+        self._append_sandbox_audit(
+            "whitelist_updated",
+            session_id=session_id,
+            action=action,
+            target_type=target_type,
+            value=normalized_value,
+            changed=changed,
+        )
+        if changed:
+            msg = f"{target_type.capitalize()} {verb} sandbox whitelist: {normalized_value}"
+        else:
+            msg = f"No change. {target_type.capitalize()} already in desired whitelist state: {normalized_value}"
+        msg += "\n\n" + self._format_whitelist_snapshot()
+        return self._build_assistant_response(
+            session_id=session_id,
+            message=msg,
+            model=model,
+        )
+
     def _maybe_gate_tool_calls(
         self,
         session_id: str,
@@ -1704,10 +1888,10 @@ class MetaClawAPIServer:
                 decisions=decisions,
             )
             pending_text = (
-                "This tool call requires approval before execution.\n"
+                "这个工具在调用前需要获得你的允许.\n"
                 f"Approval ID: {approval['approval_id']}\n"
-                "Approve with `/approve` or reject with `/reject`.\n"
-                "You can also use `/approve <approval_id>` or `/reject <approval_id>` if there are multiple pending approvals.\n"
+                "使用 `/approve` 进行批准，或使用 `/reject` 进行拒绝.\n"
+                "如果有多个待处理的批准，你也可以使用 `/approve <approval_id>` 或 `/reject <approval_id>`.\n"
                 + self._summarize_sandbox_decisions(decisions)
             )
             pending_msg = {
@@ -1896,6 +2080,24 @@ class MetaClawAPIServer:
             raise HTTPException(status_code=400, detail="messages must be a non-empty list")
         self._latest_injected_skills.pop(session_id, None)
         latest_user_text = _extract_last_user_instruction(messages)
+        inline_whitelist = _parse_inline_whitelist(latest_user_text) if self.config.sandbox_enabled else None
+        if inline_whitelist is not None:
+            action, target_type, value = inline_whitelist
+            logger.info(
+                "[Sandbox] intercepted whitelist command session=%s action=%s target=%s value=%s",
+                session_id,
+                action,
+                target_type or "<none>",
+                value[:200],
+            )
+            return await self._handle_inline_whitelist(
+                session_id=session_id,
+                messages=messages,
+                model=str(body.get("model", "") or self._served_model),
+                action=action,
+                target_type=target_type,
+                value=value,
+            )
         inline_approval = _parse_inline_approval(latest_user_text) if self.config.sandbox_approval_enabled else None
         if inline_approval is not None:
             action, approval_id = inline_approval

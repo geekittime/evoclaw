@@ -153,6 +153,7 @@ class MetaClawConfig:
     sandbox_audit_path: str = "records/sandbox_audit.jsonl"
     sandbox_approval_state_path: str = "records/sandbox_approvals.json"
     sandbox_approval_history_path: str = "records/sandbox_approval_history.jsonl"
+    sandbox_whitelist_path: str = "records/sandbox_whitelist.json"
 
     # ------------------------------------------------------------------ #
     # Programmatic task rollout (Qwen3-native, no OpenClaw TUI needed)  #

@@ -45,6 +45,10 @@ def _extract_words(text: str) -> list[str]:
     return [part for part in re.split(r"\s+", (text or "").strip()) if part]
 
 
+def _normalize_command(value: str) -> str:
+    return " ".join(_extract_words(value or ""))
+
+
 @dataclass
 class SandboxDecision:
     tool_call_id: str
@@ -56,6 +60,115 @@ class SandboxDecision:
     paths: list[str] = field(default_factory=list)
     path_violations: list[str] = field(default_factory=list)
     args: dict[str, Any] = field(default_factory=dict)
+
+
+class SandboxWhitelistManager:
+    def __init__(self, state_path: str) -> None:
+        self.state_path = state_path
+        self._lock = threading.RLock()
+        _ensure_parent(state_path)
+        self._state = self._load_state()
+
+    def add_command(self, command: str) -> bool:
+        normalized = _normalize_command(command)
+        if not normalized:
+            return False
+        with self._lock:
+            commands = self._state.setdefault("command_allowlist", [])
+            if normalized in commands:
+                return False
+            commands.append(normalized)
+            commands.sort()
+            self._save_state()
+        return True
+
+    def remove_command(self, command: str) -> bool:
+        normalized = _normalize_command(command)
+        with self._lock:
+            commands = self._state.setdefault("command_allowlist", [])
+            if normalized not in commands:
+                return False
+            commands.remove(normalized)
+            self._save_state()
+        return True
+
+    def add_path(self, path: str) -> bool:
+        normalized = _normalize_path(path)
+        if not normalized:
+            return False
+        with self._lock:
+            paths = self._state.setdefault("path_allowlist", [])
+            if normalized in paths:
+                return False
+            paths.append(normalized)
+            paths.sort()
+            self._save_state()
+        return True
+
+    def remove_path(self, path: str) -> bool:
+        normalized = _normalize_path(path)
+        with self._lock:
+            paths = self._state.setdefault("path_allowlist", [])
+            if normalized not in paths:
+                return False
+            paths.remove(normalized)
+            self._save_state()
+        return True
+
+    def is_command_allowed(self, command: str) -> bool:
+        normalized = _normalize_command(command)
+        if not normalized:
+            return False
+        with self._lock:
+            commands = self._state.get("command_allowlist", [])
+            return normalized in commands
+
+    def is_path_allowed(self, path: str) -> bool:
+        normalized = _normalize_path(path)
+        if not normalized:
+            return False
+        with self._lock:
+            entries = self._state.get("path_allowlist", [])
+            for entry in entries:
+                if normalized == entry or normalized.startswith(entry + "/"):
+                    return True
+        return False
+
+    def snapshot(self) -> dict[str, list[str]]:
+        with self._lock:
+            return {
+                "command_allowlist": list(self._state.get("command_allowlist", [])),
+                "path_allowlist": list(self._state.get("path_allowlist", [])),
+            }
+
+    def _load_state(self) -> dict[str, list[str]]:
+        if not self.state_path or not os.path.exists(self.state_path):
+            return {"command_allowlist": [], "path_allowlist": []}
+        try:
+            with open(self.state_path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            if not isinstance(payload, dict):
+                return {"command_allowlist": [], "path_allowlist": []}
+            return {
+                "command_allowlist": [
+                    _normalize_command(item)
+                    for item in payload.get("command_allowlist", [])
+                    if _normalize_command(str(item))
+                ],
+                "path_allowlist": [
+                    _normalize_path(str(item))
+                    for item in payload.get("path_allowlist", [])
+                    if _normalize_path(str(item))
+                ],
+            }
+        except Exception:
+            return {"command_allowlist": [], "path_allowlist": []}
+
+    def _save_state(self) -> None:
+        if not self.state_path:
+            return
+        with open(self.state_path, "w", encoding="utf-8") as handle:
+            json.dump(self._state, handle, ensure_ascii=False, indent=2)
 
 
 class PathPolicy:
@@ -122,7 +235,12 @@ class PathPolicy:
             "from_path",
         }
 
-    def inspect(self, tool_name: str, args: dict[str, Any]) -> tuple[str, list[str], list[str]]:
+    def inspect(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+        whitelist_manager: SandboxWhitelistManager | None = None,
+    ) -> tuple[str, list[str], list[str]]:
         paths = self._collect_paths(args)
         if not paths:
             return "allow", [], []
@@ -133,6 +251,8 @@ class PathPolicy:
         for raw in paths:
             normalized = _normalize_path(raw)
             if not normalized:
+                continue
+            if whitelist_manager is not None and whitelist_manager.is_path_allowed(raw):
                 continue
             if any(marker in normalized for marker in self.blocked_markers):
                 violations.append(f"blocked path: {raw}")
@@ -182,9 +302,11 @@ class SandboxPolicyEngine:
         self,
         command_policy_enabled: bool = True,
         path_policy_enabled: bool = True,
+        whitelist_manager: SandboxWhitelistManager | None = None,
     ) -> None:
         self.command_policy_enabled = command_policy_enabled
         self.path_policy_enabled = path_policy_enabled
+        self.whitelist_manager = whitelist_manager
         self.path_policy = PathPolicy()
         self.low_commands = {
             "pwd",
@@ -240,9 +362,31 @@ class SandboxPolicyEngine:
             tool_name = str(function.get("name", "") or "unknown_tool")
             args = _safe_json_loads(str(function.get("arguments", "{}") or "{}"))
             command = self._extract_command(tool_name, args)
+            if (
+                self.whitelist_manager is not None
+                and command
+                and self.whitelist_manager.is_command_allowed(command)
+            ):
+                decisions.append(
+                    SandboxDecision(
+                        tool_call_id=str(tc.get("id", "") or ""),
+                        tool_name=tool_name,
+                        risk_level="allowlisted",
+                        action="allow",
+                        reason="command allowlisted",
+                        command=command,
+                        paths=self.path_policy._collect_paths(args),
+                        args=args,
+                    )
+                )
+                continue
             risk_level, reason = self._risk_for(tool_name, args, command)
             if self.path_policy_enabled:
-                path_action, paths, path_violations = self.path_policy.inspect(tool_name, args)
+                path_action, paths, path_violations = self.path_policy.inspect(
+                    tool_name,
+                    args,
+                    whitelist_manager=self.whitelist_manager,
+                )
             else:
                 path_action, paths, path_violations = "allow", [], []
             action = "allow"
