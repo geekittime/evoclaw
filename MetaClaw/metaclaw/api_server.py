@@ -1232,7 +1232,7 @@ class MetaClawAPIServer:
                 raise HTTPException(status_code=400, detail="session_id is required")
             record = owner._sandbox_approvals.approve(session_id, approval_id)
             if record is None:
-                raise HTTPException(status_code=404, detail="pending approval not found")
+                raise HTTPException(status_code=404, detail="pending approval not found for this session")
             owner._append_sandbox_audit(
                 "approval_approved",
                 session_id=session_id,
@@ -1262,7 +1262,7 @@ class MetaClawAPIServer:
                 raise HTTPException(status_code=400, detail="session_id is required")
             record = owner._sandbox_approvals.reject(session_id, approval_id)
             if record is None:
-                raise HTTPException(status_code=404, detail="pending approval not found")
+                raise HTTPException(status_code=404, detail="pending approval not found for this session")
             owner._append_sandbox_audit(
                 "approval_rejected",
                 session_id=session_id,
@@ -1614,7 +1614,7 @@ class MetaClawAPIServer:
         if action == "approve":
             record = self._sandbox_approvals.approve(session_id, approval_id)
             if record is None:
-                raise HTTPException(status_code=404, detail="pending approval not found")
+                raise HTTPException(status_code=404, detail="pending approval not found for this session")
             tool_calls = record.get("tool_calls", [])
             assistant_message = record.get("assistant_message", {}) or {}
             content = str(assistant_message.get("content", "") or "")
@@ -1648,7 +1648,7 @@ class MetaClawAPIServer:
             )
         record = self._sandbox_approvals.reject(session_id, approval_id)
         if record is None:
-            raise HTTPException(status_code=404, detail="pending approval not found")
+            raise HTTPException(status_code=404, detail="pending approval not found for this session")
         self._append_sandbox_audit(
             "approval_rejected",
             session_id=session_id,
@@ -1706,7 +1706,8 @@ class MetaClawAPIServer:
             pending_text = (
                 "This tool call requires approval before execution.\n"
                 f"Approval ID: {approval['approval_id']}\n"
-                "Approve with `/approve <approval_id>` or reject with `/reject <approval_id>`.\n"
+                "Approve with `/approve` or reject with `/reject`.\n"
+                "You can also use `/approve <approval_id>` or `/reject <approval_id>` if there are multiple pending approvals.\n"
                 + self._summarize_sandbox_decisions(decisions)
             )
             pending_msg = {
