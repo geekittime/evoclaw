@@ -630,9 +630,9 @@ def _parse_inline_whitelist_v2(text: str) -> tuple[str, str, str] | None:
     raw = (text or "").strip()
     if not raw:
         return None
-    lowered = " ".join(raw.lower().split())
+    lowered = " ".join(raw.lower().split()).strip(" \t\r\n:;,.!?")
 
-    if lowered in {"whitelist", "allowlist", "whitelist show", "allowlist show", "show whitelist", "show allowlist"}:
+    if re.search(r"(?:^|\s)(?:show\s+)?(?:white|allow)list(?:\s+(?:show|status))?\s*$", lowered):
         return "list", "", ""
 
     match = re.search(r"(?:^|\s)(?:sandbox\s+)?(allow|unallow)\s+(command|path)\s+(.+?)\s*$", raw, re.IGNORECASE)
