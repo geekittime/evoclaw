@@ -68,7 +68,7 @@ class MetaClawConfig:
     feedback_history_path: str = "records/feedback.jsonl"
     feedback_skill_model_id: str = "deepseek-chat"
     feedback_skill_api_base: str = "https://api.deepseek.com/v1"
-    feedback_skill_api_key: str = "sk-3b5348120d3c47dbbc5efb1c32606e52"
+    feedback_skill_api_key: str = "sk-33021c0bec434de4b877c3142cc409c9"
     feedback_skill_max_completion_tokens: int = 1200
     user_profile_enabled: bool = True
     user_profile_path: str = "records/user_profiles.json"
@@ -77,13 +77,13 @@ class MetaClawConfig:
     task_brief_path: str = "records/task_briefs.json"
     task_brief_model_id: str = "deepseek-chat"
     task_brief_api_base: str = "https://api.deepseek.com/v1"
-    task_brief_api_key: str = "sk-3b5348120d3c47dbbc5efb1c32606e52"
+    task_brief_api_key: str = "sk-33021c0bec434de4b877c3142cc409c9"
     task_brief_max_completion_tokens: int = 700
     session_report_enabled: bool = True
     session_report_path: str = "records/session_reports.jsonl"
     session_report_model_id: str = "deepseek-chat"
     session_report_api_base: str = "https://api.deepseek.com/v1"
-    session_report_api_key: str = "sk-3b5348120d3c47dbbc5efb1c32606e52"
+    session_report_api_key: str = "sk-33021c0bec434de4b877c3142cc409c9"
     session_report_max_completion_tokens: int = 1000
 
     # ------------------------------------------------------------------ #
@@ -122,7 +122,7 @@ class MetaClawConfig:
     # ------------------------------------------------------------------ #
     # Context window                                                       #
     # ------------------------------------------------------------------ #
-    max_context_tokens: int = 20000            # hard cap on prompt token count; must match
+    max_context_tokens: int = 200000            # hard cap on prompt token count; must match
                                               # Tinker's max_seq_len minus headroom for response
     context_summary_enabled: bool = True
     context_summary_trigger_ratio: float = 0.85
@@ -131,7 +131,9 @@ class MetaClawConfig:
     context_summary_max_completion_tokens: int = 900
     context_summary_model_id: str = "deepseek-chat"
     context_summary_api_base: str = "https://api.deepseek.com/v1"
-    context_summary_api_key: str = "sk-3b5348120d3c47dbbc5efb1c32606e52"
+    context_summary_api_key: str = "sk-33021c0bec434de4b877c3142cc409c9"
+    context_summary_store_path: str = "records/context_summaries.json"
+    context_summary_compact_retries: int = 2
 
     # ------------------------------------------------------------------ #
     # API Server                                                          #

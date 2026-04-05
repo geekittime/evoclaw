@@ -787,6 +787,7 @@ class MetaClawAPIServer:
         self._teacher_tasks: dict[str, dict[int, asyncio.Task]] = {}  # session → {turn → task} (OPD)
         self._pending_records: dict[str, dict] = {}               # for record logging
         self._session_effective: dict[str, int] = {}              # at-least-one guarantee
+        self._session_context_summary_file = ""
         self._session_context_summaries: dict[str, str] = {}
         self._feedback_by_session: dict[str, list[dict[str, Any]]] = {}
         self._latest_injected_skills: dict[str, list[str]] = {}
@@ -844,6 +845,9 @@ class MetaClawAPIServer:
             self._prm_record_file = _resolve_record_path(config.record_dir, "prm_scores.jsonl")
             self._feedback_file = _resolve_record_path(config.record_dir, config.feedback_history_path)
             self._session_report_file = _resolve_record_path(config.record_dir, config.session_report_path)
+            self._session_context_summary_file = _resolve_record_path(
+                config.record_dir, config.context_summary_store_path,
+            )
             self._sandbox_audit_file = _resolve_record_path(config.record_dir, config.sandbox_audit_path)
             self._sandbox_approval_state_file = _resolve_record_path(
                 config.record_dir, config.sandbox_approval_state_path,
@@ -864,6 +868,13 @@ class MetaClawAPIServer:
                 pass
             with open(self._session_report_file, "a", encoding="utf-8"):
                 pass
+            if self._session_context_summary_file:
+                parent = os.path.dirname(self._session_context_summary_file)
+                if parent:
+                    os.makedirs(parent, exist_ok=True)
+                if not os.path.exists(self._session_context_summary_file):
+                    with open(self._session_context_summary_file, "w", encoding="utf-8") as f:
+                        json.dump({}, f, ensure_ascii=False, indent=2)
             if self.config.sandbox_audit_enabled:
                 self._sandbox_audit = SandboxAuditLogger(self._sandbox_audit_file)
             if self.config.sandbox_enabled:
@@ -875,6 +886,7 @@ class MetaClawAPIServer:
                 )
             if self._sandbox_policy is not None:
                 self._sandbox_policy.whitelist_manager = self._sandbox_whitelist
+            self._session_context_summaries = self._load_context_summaries()
 
         if self.config.feedback_enabled and self.skill_manager is not None:
             self._ensure_important_skill_exists()
@@ -1612,6 +1624,48 @@ class MetaClawAPIServer:
                 json.dump(self._task_briefs, f, ensure_ascii=False, indent=2)
         except OSError as e:
             logger.warning("[OpenClaw] failed to write task brief file: %s", e)
+
+    def _load_context_summaries(self) -> dict[str, str]:
+        path = self._session_context_summary_file
+        if not path:
+            return {}
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                return {}
+            normalized: dict[str, str] = {}
+            for key, value in data.items():
+                text = str(value or "").strip()
+                if text:
+                    normalized[str(key)] = text
+            return normalized
+        except Exception:
+            return {}
+
+    def _save_context_summaries(self) -> None:
+        path = self._session_context_summary_file
+        if not path:
+            return
+        try:
+            parent = os.path.dirname(path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(self._session_context_summaries, f, ensure_ascii=False, indent=2)
+        except OSError as e:
+            logger.warning("[OpenClaw] failed to write context summary file: %s", e)
+
+    def _store_context_summary(self, session_id: str, summary: str) -> str:
+        text = str(summary or "").strip()
+        if not session_id:
+            return text
+        if text:
+            self._session_context_summaries[session_id] = text
+        else:
+            self._session_context_summaries.pop(session_id, None)
+        self._save_context_summaries()
+        return text
 
     def _append_session_report(self, report: dict[str, Any]) -> None:
         if not self._session_report_file:
@@ -3282,8 +3336,46 @@ class MetaClawAPIServer:
         if len(summary) > self.config.context_summary_max_chars:
             summary = summary[: self.config.context_summary_max_chars].rstrip()
         if summary:
-            self._session_context_summaries[session_id] = summary
+            self._store_context_summary(session_id, summary)
         return summary or existing_summary
+
+    async def _compact_context_summary(
+        self,
+        session_id: str,
+        summary_text: str,
+        latest_instruction: str,
+        target_chars: int,
+    ) -> str:
+        compact_limit = max(400, int(target_chars))
+        prompt_parts = []
+        if latest_instruction:
+            prompt_parts.append(f"Latest user instruction:\n{latest_instruction}")
+        prompt_parts.append(
+            "Current compressed summary is still too long for the next prompt. "
+            "Rewrite it to be more compact while preserving user goals, constraints, facts, "
+            "important tool results, file paths, unresolved issues, and safety caveats.",
+        )
+        prompt_parts.append(f"Keep the revised summary under {compact_limit} characters.")
+        prompt_parts.append(f"Current compressed summary:\n{summary_text}")
+        try:
+            compacted = await asyncio.to_thread(
+                run_context_summary_llm,
+                [{"role": "user", "content": "\n\n".join(prompt_parts)}],
+                self.config.context_summary_api_key,
+                self.config.context_summary_api_base,
+                self.config.context_summary_model_id,
+                self.config.context_summary_max_completion_tokens,
+            )
+        except Exception as e:
+            logger.warning("[OpenClaw] context summary compaction failed for session=%s: %s", session_id, e)
+            return summary_text
+        compacted = (compacted or "").strip()
+        if len(compacted) > compact_limit:
+            compacted = compacted[:compact_limit].rstrip()
+        if compacted:
+            self._store_context_summary(session_id, compacted)
+            return compacted
+        return summary_text
 
     async def _compress_messages_with_summary(
         self,
@@ -3328,9 +3420,34 @@ class MetaClawAPIServer:
             else:
                 break
 
-        summarized = self._with_context_summary(sys_msgs, list(reversed(kept)), summary_text)
-        if self._estimate_prompt_tokens(summarized, tools) > max_prompt_tokens:
-            fallback_summary = summary_text[: max(512, self.config.context_summary_max_chars // 2)].rstrip()
+        current_summary = summary_text
+        summarized = self._with_context_summary(sys_msgs, list(reversed(kept)), current_summary)
+        summarized_tokens = self._estimate_prompt_tokens(summarized, tools)
+        compact_retries = max(0, int(self.config.context_summary_compact_retries))
+        for retry in range(compact_retries):
+            if summarized_tokens <= max_prompt_tokens:
+                break
+            shrink_ratio = 0.75 ** (retry + 1)
+            compact_target = min(
+                len(current_summary),
+                max(512, int(self.config.context_summary_max_chars * shrink_ratio)),
+            )
+            compacted = await self._compact_context_summary(
+                session_id,
+                current_summary,
+                _extract_last_user_instruction(messages),
+                compact_target,
+            )
+            compacted = (compacted or "").strip()
+            if not compacted or compacted == current_summary:
+                break
+            current_summary = compacted
+            summarized = self._with_context_summary(sys_msgs, list(reversed(kept)), current_summary)
+            summarized_tokens = self._estimate_prompt_tokens(summarized, tools)
+
+        if summarized_tokens > max_prompt_tokens:
+            fallback_summary = current_summary[: max(512, self.config.context_summary_max_chars // 2)].rstrip()
+            self._store_context_summary(session_id, fallback_summary)
             summarized = self._with_context_summary(sys_msgs, list(reversed(kept)), fallback_summary)
             if self._estimate_prompt_tokens(summarized, tools) > max_prompt_tokens:
                 summarized = self._truncate_messages(summarized, tools, max_prompt_tokens)
