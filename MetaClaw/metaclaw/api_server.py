@@ -632,19 +632,10 @@ def _parse_inline_whitelist_v2(text: str) -> tuple[str, str, str] | None:
         return None
     lowered = " ".join(raw.lower().split())
 
-    cn_show_whitelist = chr(0x67e5) + chr(0x770b) + chr(0x767d) + chr(0x540d) + chr(0x5355)
-    cn_display_whitelist = chr(0x663e) + chr(0x793a) + chr(0x767d) + chr(0x540d) + chr(0x5355)
-    cn_allow = chr(0x5141) + chr(0x8bb8)
-    cn_remove_allow = chr(0x79fb) + chr(0x9664) + cn_allow
-    cn_command = chr(0x547d) + chr(0x4ee4)
-    cn_path = chr(0x8def) + chr(0x5f84)
-
     if lowered in {"whitelist", "allowlist", "whitelist show", "allowlist show", "show whitelist", "show allowlist"}:
         return "list", "", ""
-    if raw in {cn_show_whitelist, cn_display_whitelist}:
-        return "list", "", ""
 
-    match = re.search(r"^(?:sandbox\s+)?(allow|unallow)\s+(command|path)\s+(.+?)\s*$", raw, re.IGNORECASE)
+    match = re.search(r"(?:^|\s)(?:sandbox\s+)?(allow|unallow)\s+(command|path)\s+(.+?)\s*$", raw, re.IGNORECASE)
     if match:
         return (
             str(match.group(1) or "").strip().lower(),
@@ -653,7 +644,7 @@ def _parse_inline_whitelist_v2(text: str) -> tuple[str, str, str] | None:
         )
 
     match = re.search(
-        r"^(?:sandbox\s+)?whitelist\s+(add|remove)\s+(command|path)\s+(.+?)\s*$",
+        r"(?:^|\s)(?:sandbox\s+)?whitelist\s+(add|remove)\s+(command|path)\s+(.+?)\s*$",
         raw,
         re.IGNORECASE,
     )
@@ -664,12 +655,6 @@ def _parse_inline_whitelist_v2(text: str) -> tuple[str, str, str] | None:
             str(match.group(2) or "").strip().lower(),
             _strip_command_wrappers_v2(str(match.group(3) or "").strip()),
         )
-
-    match = re.search(rf"^({cn_allow}|{cn_remove_allow})\s*({cn_command}|{cn_path})\s+(.+?)\s*$", raw)
-    if match:
-        action = "allow" if str(match.group(1) or "").strip() == cn_allow else "unallow"
-        target_type = "command" if str(match.group(2) or "").strip() == cn_command else "path"
-        return action, target_type, _strip_command_wrappers_v2(str(match.group(3) or "").strip())
     return None
 
 
@@ -1881,12 +1866,7 @@ class MetaClawAPIServer:
                 "- allow command <command>\n"
                 "- allow path <path>\n"
                 "- unallow command <command>\n"
-                "- unallow path <path>\n"
-                "- 查看白名单\n"
-                "- 允许命令 <命令>\n"
-                "- 允许路径 <路径>\n"
-                "- 移除允许命令 <命令>\n"
-                "- 移除允许路径 <路径>\n\n"
+                "- unallow path <path>\n\n"
             )
             return self._build_assistant_response(
                 session_id=session_id,
@@ -1927,12 +1907,7 @@ class MetaClawAPIServer:
             "- allow command <command>\n"
             "- allow path <path>\n"
             "- unallow command <command>\n"
-            "- unallow path <path>\n"
-            "- 查看白名单\n"
-            "- 允许命令 <命令>\n"
-            "- 允许路径 <路径>\n"
-            "- 移除允许命令 <命令>\n"
-            "- 移除允许路径 <路径>\n\n"
+            "- unallow path <path>\n\n"
             + self._format_whitelist_snapshot()
         )
         return self._build_assistant_response(
