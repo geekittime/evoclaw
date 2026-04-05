@@ -37,6 +37,12 @@ from .config import MetaClawConfig
 from .data_formatter import ConversationSample
 from .memory.scope import base_scope, derive_memory_scope
 from .prm_scorer import PRMScorer
+from .sandbox import (
+    SandboxApprovalManager,
+    SandboxAuditLogger,
+    SandboxDecision,
+    SandboxPolicyEngine,
+)
 from .skill_manager import SkillManager
 from .utils import (
     run_context_summary_llm,
@@ -152,6 +158,7 @@ _QWEN_TOOL_CALL_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL
 _INLINE_FEEDBACK_PATTERNS = [
     re.compile(r"^/(?:feedback|fb)\s+(good|bad)\s*(.*)$", re.IGNORECASE),
 ]
+_INLINE_APPROVAL_RE = re.compile(r"^/(approve|reject)\s*([A-Za-z0-9_-]+)?\s*$", re.IGNORECASE)
 
 def _normalize_tool_name(raw_name: str, args_raw: str) -> str:
     """
@@ -516,6 +523,18 @@ def _find_inline_feedback(messages: list[dict]) -> tuple[str, str, str] | None:
     return parsed[0], parsed[1], text
 
 
+def _parse_inline_approval(text: str) -> tuple[str, str] | None:
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    match = _INLINE_APPROVAL_RE.match(raw)
+    if not match:
+        return None
+    action = str(match.group(1) or "").strip().lower()
+    approval_id = str(match.group(2) or "").strip()
+    return action, approval_id
+
+
 def _extract_preference_clauses(text: str) -> list[str]:
     raw = (text or "").strip()
     if not raw:
@@ -690,6 +709,16 @@ class MetaClawAPIServer:
         self._user_profiles: dict[str, list[str]] = self._load_user_profiles()
         self._task_briefs: dict[str, dict[str, list[str]]] = self._load_task_briefs()
         self._latest_session_reports: dict[str, dict[str, Any]] = {}
+        self._sandbox_policy = (
+            SandboxPolicyEngine(
+                command_policy_enabled=config.sandbox_command_policy_enabled,
+                path_policy_enabled=config.sandbox_path_policy_enabled,
+            )
+            if config.sandbox_enabled
+            else None
+        )
+        self._sandbox_audit: SandboxAuditLogger | None = None
+        self._sandbox_approvals: SandboxApprovalManager | None = None
         # Buffer turns per session for skill evolution (cleared on evolution trigger)
         self._session_turns: dict[str, list] = {}
         # Buffer turns per session for memory ingestion (only cleared on session_done)
@@ -715,6 +744,9 @@ class MetaClawAPIServer:
         self._feedback_file = ""
         self._prm_record_file = ""
         self._session_report_file = ""
+        self._sandbox_audit_file = ""
+        self._sandbox_approval_state_file = ""
+        self._sandbox_approval_history_file = ""
         if config.record_enabled:
             os.makedirs(config.record_dir, exist_ok=True)
             self._record_file = _resolve_record_path(config.record_dir, config.record_enriched_file)
@@ -725,6 +757,13 @@ class MetaClawAPIServer:
             self._prm_record_file = _resolve_record_path(config.record_dir, "prm_scores.jsonl")
             self._feedback_file = _resolve_record_path(config.record_dir, config.feedback_history_path)
             self._session_report_file = _resolve_record_path(config.record_dir, config.session_report_path)
+            self._sandbox_audit_file = _resolve_record_path(config.record_dir, config.sandbox_audit_path)
+            self._sandbox_approval_state_file = _resolve_record_path(
+                config.record_dir, config.sandbox_approval_state_path,
+            )
+            self._sandbox_approval_history_file = _resolve_record_path(
+                config.record_dir, config.sandbox_approval_history_path,
+            )
             with open(self._record_file, "a", encoding="utf-8"):
                 pass
             with open(self._openclaw_rl_record_file, "a", encoding="utf-8"):
@@ -735,6 +774,13 @@ class MetaClawAPIServer:
                 pass
             with open(self._session_report_file, "a", encoding="utf-8"):
                 pass
+            if self.config.sandbox_audit_enabled:
+                self._sandbox_audit = SandboxAuditLogger(self._sandbox_audit_file)
+            if self.config.sandbox_approval_enabled:
+                self._sandbox_approvals = SandboxApprovalManager(
+                    self._sandbox_approval_state_file,
+                    self._sandbox_approval_history_file,
+                )
 
         if self.config.feedback_enabled and self.skill_manager is not None:
             self._ensure_important_skill_exists()
@@ -855,6 +901,14 @@ class MetaClawAPIServer:
                 )
 
             stream = bool(body.get("stream", False))
+            owner._append_sandbox_audit(
+                "request_received",
+                session_id=session_id,
+                turn_type=turn_type,
+                session_done=session_done,
+                memory_scope=memory_scope,
+                stream=stream,
+            )
             result = await owner._handle_request(
                 body,
                 session_id=session_id,
@@ -1148,6 +1202,79 @@ class MetaClawAPIServer:
             )
             return JSONResponse(content=result)
 
+        @app.get("/v1/sandbox/pending")
+        async def sandbox_pending(
+            request: Request,
+            session_id: str = "",
+            authorization: Optional[str] = Header(default=None),
+        ):
+            owner: MetaClawAPIServer = request.app.state.owner
+            await owner._check_auth(authorization)
+            if owner._sandbox_approvals is None:
+                raise HTTPException(status_code=503, detail="sandbox approvals are not enabled")
+            return JSONResponse(content={
+                "pending": owner._sandbox_approvals.list_pending(session_id=session_id.strip()),
+            })
+
+        @app.post("/v1/sandbox/approve")
+        async def sandbox_approve(
+            request: Request,
+            authorization: Optional[str] = Header(default=None),
+        ):
+            owner: MetaClawAPIServer = request.app.state.owner
+            await owner._check_auth(authorization)
+            if owner._sandbox_approvals is None:
+                raise HTTPException(status_code=503, detail="sandbox approvals are not enabled")
+            body = await request.json()
+            session_id = str(body.get("session_id", "") or "").strip()
+            approval_id = str(body.get("approval_id", "") or "").strip()
+            if not session_id:
+                raise HTTPException(status_code=400, detail="session_id is required")
+            record = owner._sandbox_approvals.approve(session_id, approval_id)
+            if record is None:
+                raise HTTPException(status_code=404, detail="pending approval not found")
+            owner._append_sandbox_audit(
+                "approval_approved",
+                session_id=session_id,
+                approval_id=record.get("approval_id", ""),
+                tool_calls=record.get("tool_calls", []),
+            )
+            return JSONResponse(content={
+                "ok": True,
+                "approval_id": record.get("approval_id", ""),
+                "status": record.get("status", ""),
+                "tool_calls": record.get("tool_calls", []),
+            })
+
+        @app.post("/v1/sandbox/reject")
+        async def sandbox_reject(
+            request: Request,
+            authorization: Optional[str] = Header(default=None),
+        ):
+            owner: MetaClawAPIServer = request.app.state.owner
+            await owner._check_auth(authorization)
+            if owner._sandbox_approvals is None:
+                raise HTTPException(status_code=503, detail="sandbox approvals are not enabled")
+            body = await request.json()
+            session_id = str(body.get("session_id", "") or "").strip()
+            approval_id = str(body.get("approval_id", "") or "").strip()
+            if not session_id:
+                raise HTTPException(status_code=400, detail="session_id is required")
+            record = owner._sandbox_approvals.reject(session_id, approval_id)
+            if record is None:
+                raise HTTPException(status_code=404, detail="pending approval not found")
+            owner._append_sandbox_audit(
+                "approval_rejected",
+                session_id=session_id,
+                approval_id=record.get("approval_id", ""),
+                tool_calls=record.get("tool_calls", []),
+            )
+            return JSONResponse(content={
+                "ok": True,
+                "approval_id": record.get("approval_id", ""),
+                "status": record.get("status", ""),
+            })
+
         @app.get("/v1/session/report")
         async def get_session_report(
             request: Request,
@@ -1217,6 +1344,14 @@ class MetaClawAPIServer:
                 rec.get("instruction_text", ""),
                 next_state,
             )
+        self._append_sandbox_audit(
+            "record_flushed",
+            session_id=session_id,
+            turn=rec.get("turn", 0),
+            next_state_role=rec.get("next_state_role", ""),
+            attempted_tool_calls=(rec.get("sandbox", {}) or {}).get("attempted_tool_calls", rec.get("tool_calls")),
+            sandbox=(rec.get("sandbox", {}) or {}),
+        )
         if self._enriched_record_file:
             try:
                 with open(self._enriched_record_file, "a", encoding="utf-8") as f:
@@ -1403,6 +1538,191 @@ class MetaClawAPIServer:
             }
         }
 
+    def _build_assistant_response(
+        self,
+        session_id: str,
+        message: str,
+        model: str = "",
+        tool_calls: list[dict] | None = None,
+        finish_reason: str = "stop",
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        response = {
+            "response": {
+                "id": f"chatcmpl-metaclaw-{int(time.time())}",
+                "object": "chat.completion",
+                "created": int(time.time()),
+                "model": model or self._served_model,
+                "session_id": session_id,
+                "choices": [{
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": message,
+                    },
+                    "finish_reason": finish_reason,
+                }],
+                "usage": {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                },
+            }
+        }
+        if tool_calls:
+            response["response"]["choices"][0]["message"]["tool_calls"] = tool_calls
+            response["response"]["choices"][0]["finish_reason"] = "tool_calls"
+        if extra:
+            response["response"].update(extra)
+        return response
+
+    def _append_sandbox_audit(self, event_type: str, **payload: Any) -> None:
+        if self._sandbox_audit is None:
+            return
+        self._sandbox_audit.append(event_type, **payload)
+
+    def _attach_pending_record_metadata(self, session_id: str, **payload: Any) -> None:
+        pending = self._pending_records.get(session_id)
+        if pending is None:
+            return
+        sandbox = dict(pending.get("sandbox", {}) or {})
+        sandbox.update(payload)
+        pending["sandbox"] = sandbox
+
+    @staticmethod
+    def _summarize_sandbox_decisions(decisions: list[SandboxDecision]) -> str:
+        lines: list[str] = []
+        for item in decisions:
+            lines.append(
+                f"- {item.tool_name} ({item.risk_level}): {item.action} | {item.reason}"
+            )
+        return "\n".join(lines)
+
+    async def _handle_inline_approval(
+        self,
+        session_id: str,
+        messages: list[dict],
+        model: str,
+        action: str,
+        approval_id: str,
+    ) -> dict[str, Any]:
+        if self._sandbox_approvals is None:
+            raise HTTPException(status_code=503, detail="sandbox approvals are not enabled")
+        raw_text = _extract_last_user_instruction(messages)
+        if session_id in self._pending_records:
+            self._flush_pending_record(session_id, {"role": "user", "content": raw_text})
+        if action == "approve":
+            record = self._sandbox_approvals.approve(session_id, approval_id)
+            if record is None:
+                raise HTTPException(status_code=404, detail="pending approval not found")
+            tool_calls = record.get("tool_calls", [])
+            assistant_message = record.get("assistant_message", {}) or {}
+            content = str(assistant_message.get("content", "") or "")
+            self._append_sandbox_audit(
+                "approval_approved",
+                session_id=session_id,
+                approval_id=record.get("approval_id", ""),
+                tool_calls=tool_calls,
+            )
+            self._turn_counts[session_id] = self._turn_counts.get(session_id, 0) + 1
+            turn_num = self._turn_counts[session_id]
+            prompt_text = "\n".join(
+                f"{m.get('role', '?')}: {_flatten_message_content(m.get('content', ''))}"
+                for m in messages
+            )
+            response_text = content or (json.dumps(tool_calls, ensure_ascii=False) if tool_calls else "")
+            self._buffer_record(session_id, turn_num, messages, prompt_text, response_text, tool_calls)
+            self._attach_pending_record_metadata(
+                session_id,
+                approval_id=record.get("approval_id", ""),
+                approval_status="approved",
+                approval_source="inline_command",
+            )
+            return self._build_assistant_response(
+                session_id=session_id,
+                message=content,
+                model=model,
+                tool_calls=tool_calls,
+                finish_reason="tool_calls",
+                extra={"approval_id": record.get("approval_id", "")},
+            )
+        record = self._sandbox_approvals.reject(session_id, approval_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="pending approval not found")
+        self._append_sandbox_audit(
+            "approval_rejected",
+            session_id=session_id,
+            approval_id=record.get("approval_id", ""),
+            tool_calls=record.get("tool_calls", []),
+        )
+        return self._build_assistant_response(
+            session_id=session_id,
+            message=f"Approval rejected for {record.get('approval_id', '')}. The blocked tool call will not run.",
+            model=model,
+            extra={"approval_id": record.get("approval_id", "")},
+        )
+
+    def _maybe_gate_tool_calls(
+        self,
+        session_id: str,
+        model: str,
+        assistant_msg: dict[str, Any],
+        tool_calls: list[dict],
+    ) -> tuple[dict[str, Any], list[dict], list[SandboxDecision], bool]:
+        if not tool_calls or self._sandbox_policy is None or not self.config.sandbox_enabled:
+            return assistant_msg, tool_calls, [], False
+        decisions = self._sandbox_policy.evaluate_tool_calls(tool_calls)
+        self._append_sandbox_audit(
+            "tool_calls_evaluated",
+            session_id=session_id,
+            tool_calls=tool_calls,
+            decisions=[decision.__dict__ for decision in decisions],
+        )
+        has_denied = any(decision.action == "deny" for decision in decisions)
+        has_pending = any(decision.action == "require_approval" for decision in decisions)
+        if has_denied:
+            block_text = (
+                "Blocked by MetaClaw sandbox policy.\n"
+                + self._summarize_sandbox_decisions(decisions)
+            )
+            blocked_msg = {
+                "role": "assistant",
+                "content": block_text,
+            }
+            self._append_sandbox_audit(
+                "tool_calls_blocked",
+                session_id=session_id,
+                tool_calls=tool_calls,
+                decisions=[decision.__dict__ for decision in decisions],
+            )
+            return blocked_msg, [], decisions, True
+        if has_pending and self._sandbox_approvals is not None:
+            approval = self._sandbox_approvals.create_pending(
+                session_id=session_id,
+                tool_calls=tool_calls,
+                assistant_message=assistant_msg,
+                decisions=decisions,
+            )
+            pending_text = (
+                "This tool call requires approval before execution.\n"
+                f"Approval ID: {approval['approval_id']}\n"
+                "Approve with `/approve <approval_id>` or reject with `/reject <approval_id>`.\n"
+                + self._summarize_sandbox_decisions(decisions)
+            )
+            pending_msg = {
+                "role": "assistant",
+                "content": pending_text,
+            }
+            self._append_sandbox_audit(
+                "tool_calls_pending_approval",
+                session_id=session_id,
+                approval_id=approval["approval_id"],
+                tool_calls=tool_calls,
+                decisions=[decision.__dict__ for decision in decisions],
+            )
+            return pending_msg, [], decisions, True
+        return assistant_msg, tool_calls, decisions, False
+
     def _buffer_record(self, session_id: str, turn_num: int, messages: list,
                        prompt_text: str, response_text: str, tool_calls: list):
         if not self._record_file:
@@ -1574,8 +1894,24 @@ class MetaClawAPIServer:
         if not isinstance(messages, list) or not messages:
             raise HTTPException(status_code=400, detail="messages must be a non-empty list")
         self._latest_injected_skills.pop(session_id, None)
-        inline_feedback = _find_inline_feedback(messages) if self.config.feedback_enabled else None
         latest_user_text = _extract_last_user_instruction(messages)
+        inline_approval = _parse_inline_approval(latest_user_text) if self.config.sandbox_approval_enabled else None
+        if inline_approval is not None:
+            action, approval_id = inline_approval
+            logger.info(
+                "[Sandbox] intercepted inline %s session=%s approval_id=%s",
+                action,
+                session_id,
+                approval_id or "<latest>",
+            )
+            return await self._handle_inline_approval(
+                session_id=session_id,
+                messages=messages,
+                model=str(body.get("model", "") or self._served_model),
+                action=action,
+                approval_id=approval_id,
+            )
+        inline_feedback = _find_inline_feedback(messages) if self.config.feedback_enabled else None
         if inline_feedback is not None:
             rating, feedback_text, feedback_raw_text = inline_feedback
             if session_id in self._pending_records:
@@ -1700,6 +2036,14 @@ class MetaClawAPIServer:
         if "model" not in forward_body:
             forward_body["model"] = self._served_model
         forward_body["messages"] = _ensure_reasoning_content(messages)
+        self._append_sandbox_audit(
+            "pre_llm_forward",
+            session_id=session_id,
+            turn_type=turn_type,
+            model=str(forward_body.get("model", "") or self._served_model),
+            tool_count=len(forward_body.get("tools") or []),
+            message_count=len(forward_body.get("messages") or []),
+        )
 
         if self.config.mode == "skills_only":
             output = await self._forward_to_llm(forward_body)
@@ -1709,8 +2053,22 @@ class MetaClawAPIServer:
         choice = output.get("choices", [{}])[0]
         assistant_msg = choice.get("message", {})
         tool_calls = assistant_msg.get("tool_calls") or []
+        original_tool_calls = list(tool_calls)
         content = assistant_msg.get("content") or ""
         reasoning = assistant_msg.get("reasoning_content") or assistant_msg.get("reasoning") or ""
+        sandbox_decisions: list[SandboxDecision] = []
+        sandbox_intercepted = False
+        if tool_calls:
+            assistant_msg, tool_calls, sandbox_decisions, sandbox_intercepted = self._maybe_gate_tool_calls(
+                session_id=session_id,
+                model=str(output.get("model", "") or self._served_model),
+                assistant_msg=dict(assistant_msg),
+                tool_calls=tool_calls,
+            )
+            choice["message"] = assistant_msg
+            choice["finish_reason"] = "tool_calls" if tool_calls else "stop"
+            content = assistant_msg.get("content") or ""
+            reasoning = assistant_msg.get("reasoning_content") or assistant_msg.get("reasoning") or ""
 
         logger.info(
             f"{_YELLOW}[OpenClaw] [{turn_type}] session={session_id} "
@@ -1722,6 +2080,12 @@ class MetaClawAPIServer:
         )
         if tool_calls:
             logger.info("[OpenClaw] tool_calls: %s", json.dumps(tool_calls, ensure_ascii=False)[:500])
+        elif sandbox_intercepted and original_tool_calls:
+            logger.info(
+                "[Sandbox] intercepted tool_calls session=%s original=%s",
+                session_id,
+                json.dumps(original_tool_calls, ensure_ascii=False)[:500],
+            )
 
         if turn_type == "main":
             if session_id in self._pending_records and messages:
@@ -1750,6 +2114,13 @@ class MetaClawAPIServer:
                     session_id, turn_num, messages,
                     prompt_text_simple, response_text_simple, tool_calls,
                 )
+                if sandbox_decisions:
+                    self._attach_pending_record_metadata(
+                        session_id,
+                        decisions=[decision.__dict__ for decision in sandbox_decisions],
+                        intercepted=sandbox_intercepted,
+                        attempted_tool_calls=original_tool_calls,
+                    )
                 turn_entry = {
                     "prompt_text": prompt_text_simple,
                     "response_text": response_text_simple,
@@ -1850,6 +2221,13 @@ class MetaClawAPIServer:
                 session_id, turn_num, len(prompt_ids), len(response_ids),
             )
             self._buffer_record(session_id, turn_num, messages, prompt_text, response_text, tool_calls)
+            if sandbox_decisions:
+                self._attach_pending_record_metadata(
+                    session_id,
+                    decisions=[decision.__dict__ for decision in sandbox_decisions],
+                    intercepted=sandbox_intercepted,
+                    attempted_tool_calls=original_tool_calls,
+                )
             # Skill evolution + memory: buffer turns for all modes (RL and skills_only).
             turn_entry = {"prompt_text": prompt_text, "response_text": response_text}
             evolution_every_n = getattr(self.config, "skill_evolution_every_n_turns", 10)
@@ -2371,6 +2749,8 @@ class MetaClawAPIServer:
         key = self._task_brief_key(session_id, scope_id)
         task_brief = self._task_briefs.get(key, {})
         feedback_history = self._feedback_by_session.get(session_id, [])
+        sandbox_events = self._sandbox_audit.read_recent(session_id=session_id, limit=100) if self._sandbox_audit else []
+        pending_approvals = self._sandbox_approvals.list_pending(session_id=session_id) if self._sandbox_approvals else []
         injected_skills = sorted({
             skill
             for rec in records
@@ -2381,6 +2761,8 @@ class MetaClawAPIServer:
             "session_id": session_id,
             "task_brief": task_brief,
             "feedback_history": feedback_history[-10:],
+            "sandbox_events": sandbox_events[-20:],
+            "pending_approvals": len(pending_approvals),
             "injected_skills": injected_skills,
             "records": [
                 {
@@ -2417,6 +2799,7 @@ class MetaClawAPIServer:
             "turn_count": len(records),
             "task_brief": task_brief,
             "feedback_count": len(feedback_history),
+            "pending_approval_count": len(pending_approvals),
             "injected_skills": injected_skills,
             "summary": str(payload.get("summary", "") or ""),
             "wins": payload.get("wins", []) if isinstance(payload.get("wins", []), list) else [],

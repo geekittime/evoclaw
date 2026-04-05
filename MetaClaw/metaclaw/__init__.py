@@ -27,6 +27,7 @@ from .prm_scorer import PRMScorer
 from .skill_manager import SkillManager
 from .skill_evolver import SkillEvolver
 from .launcher import MetaClawLauncher
+from .sandbox import SandboxApprovalManager, SandboxAuditLogger, SandboxPolicyEngine
 
 # Memory imports
 from .memory.manager import MemoryManager
@@ -60,6 +61,9 @@ __all__ = [
     "SkillManager",
     "SkillEvolver",
     "MetaClawLauncher",
+    "SandboxApprovalManager",
+    "SandboxAuditLogger",
+    "SandboxPolicyEngine",
     "MemoryManager",
     "generate_policy_candidates",
     "MemoryPromotionCriteria",

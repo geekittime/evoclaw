@@ -145,6 +145,14 @@ class MetaClawConfig:
     record_dir: str = "records/"
     record_openclaw_rl_file: str = "openclaw_rl_records.jsonl"
     record_enriched_file: str = "conversations.jsonl"
+    sandbox_enabled: bool = True
+    sandbox_command_policy_enabled: bool = True
+    sandbox_path_policy_enabled: bool = True
+    sandbox_approval_enabled: bool = True
+    sandbox_audit_enabled: bool = True
+    sandbox_audit_path: str = "records/sandbox_audit.jsonl"
+    sandbox_approval_state_path: str = "records/sandbox_approvals.json"
+    sandbox_approval_history_path: str = "records/sandbox_approval_history.jsonl"
 
     # ------------------------------------------------------------------ #
     # Programmatic task rollout (Qwen3-native, no OpenClaw TUI needed)  #
