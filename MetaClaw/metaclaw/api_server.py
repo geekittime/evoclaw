@@ -541,9 +541,11 @@ def _parse_inline_whitelist(text: str) -> tuple[str, str, str] | None:
     if not raw:
         return None
     lowered = raw.lower()
-    if lowered in {"/whitelist", "/allowlist"}:
+    if lowered in {"whitelist show", "allowlist show"}:
         return "list", "", ""
-    match = re.match(r"^/(allow|unallow)\s+(command|path)\s+(.+?)\s*$", raw, re.IGNORECASE)
+    if raw in {"查看白名单", "显示白名单"}:
+        return "list", "", ""
+    match = re.match(r"^(allow|unallow)\s+(command|path)\s+(.+?)\s*$", raw, re.IGNORECASE)
     if match:
         return (
             str(match.group(1) or "").strip().lower(),
@@ -551,7 +553,7 @@ def _parse_inline_whitelist(text: str) -> tuple[str, str, str] | None:
             str(match.group(3) or "").strip(),
         )
     match = re.match(
-        r"^/whitelist\s+(add|remove)\s+(command|path)\s+(.+?)\s*$",
+        r"^whitelist\s+(add|remove)\s+(command|path)\s+(.+?)\s*$",
         raw,
         re.IGNORECASE,
     )
@@ -562,6 +564,11 @@ def _parse_inline_whitelist(text: str) -> tuple[str, str, str] | None:
             str(match.group(2) or "").strip().lower(),
             str(match.group(3) or "").strip(),
         )
+    match = re.match(r"^(允许|移除允许)\s*(命令|路径)\s+(.+?)\s*$", raw, re.IGNORECASE)
+    if match:
+        action = "allow" if str(match.group(1) or "").strip() == "允许" else "unallow"
+        target_type = "command" if str(match.group(2) or "").strip() == "命令" else "path"
+        return action, target_type, str(match.group(3) or "").strip()
     return None
 
 
@@ -1806,9 +1813,22 @@ class MetaClawAPIServer:
         if session_id in self._pending_records:
             self._flush_pending_record(session_id, {"role": "user", "content": raw_text})
         if action == "list":
+            help_text = (
+                "Available whitelist commands:\n"
+                "- whitelist show\n"
+                "- allow command <command>\n"
+                "- allow path <path>\n"
+                "- unallow command <command>\n"
+                "- unallow path <path>\n"
+                "- 查看白名单\n"
+                "- 允许命令 <命令>\n"
+                "- 允许路径 <路径>\n"
+                "- 移除允许命令 <命令>\n"
+                "- 移除允许路径 <路径>\n\n"
+            )
             return self._build_assistant_response(
                 session_id=session_id,
-                message=self._format_whitelist_snapshot(),
+                message=help_text + self._format_whitelist_snapshot(),
                 model=model,
             )
         if target_type not in {"command", "path"} or not value.strip():
@@ -1839,7 +1859,20 @@ class MetaClawAPIServer:
             msg = f"{target_type.capitalize()} {verb} sandbox whitelist: {normalized_value}"
         else:
             msg = f"No change. {target_type.capitalize()} already in desired whitelist state: {normalized_value}"
-        msg += "\n\n" + self._format_whitelist_snapshot()
+        msg += (
+            "\n\nAvailable whitelist commands:\n"
+            "- whitelist show\n"
+            "- allow command <command>\n"
+            "- allow path <path>\n"
+            "- unallow command <command>\n"
+            "- unallow path <path>\n"
+            "- 查看白名单\n"
+            "- 允许命令 <命令>\n"
+            "- 允许路径 <路径>\n"
+            "- 移除允许命令 <命令>\n"
+            "- 移除允许路径 <路径>\n\n"
+            + self._format_whitelist_snapshot()
+        )
         return self._build_assistant_response(
             session_id=session_id,
             message=msg,
