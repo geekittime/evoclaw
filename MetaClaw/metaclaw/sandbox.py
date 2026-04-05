@@ -69,6 +69,58 @@ class SandboxWhitelistManager:
         _ensure_parent(state_path)
         self._state = self._load_state()
 
+    DEFAULT_COMMAND_MODE = "ask"
+
+    def set_command_mode(self, command: str, mode: str) -> bool:
+        normalized = _normalize_command(command)
+        normalized_mode = str(mode or "").strip().lower()
+        if not normalized or normalized_mode not in {"allow", "ask", "deny"}:
+            return False
+        with self._lock:
+            rules = self._state.setdefault("command_rules", {})
+            if rules.get(normalized) == normalized_mode:
+                return False
+            rules[normalized] = normalized_mode
+            self._save_state()
+        return True
+
+    def remove_command_mode(self, command: str) -> bool:
+        normalized = _normalize_command(command)
+        if not normalized:
+            return False
+        with self._lock:
+            rules = self._state.setdefault("command_rules", {})
+            if normalized not in rules:
+                return False
+            rules.pop(normalized, None)
+            self._save_state()
+        return True
+
+    def get_command_mode(self, command: str) -> str | None:
+        normalized = _normalize_command(command)
+        if not normalized:
+            return None
+        with self._lock:
+            rules = self._state.get("command_rules", {})
+            value = str(rules.get(normalized, "") or "").strip().lower()
+            return value if value in {"allow", "ask", "deny"} else None
+
+    def set_default_command_mode(self, mode: str) -> bool:
+        normalized_mode = str(mode or "").strip().lower()
+        if normalized_mode not in {"allow", "ask", "deny"}:
+            return False
+        with self._lock:
+            if self._state.get("default_command_mode") == normalized_mode:
+                return False
+            self._state["default_command_mode"] = normalized_mode
+            self._save_state()
+        return True
+
+    def get_default_command_mode(self) -> str:
+        with self._lock:
+            raw = str(self._state.get("default_command_mode", self.DEFAULT_COMMAND_MODE) or "").strip().lower()
+        return raw if raw in {"allow", "ask", "deny"} else self.DEFAULT_COMMAND_MODE
+
     def add_command(self, command: str) -> bool:
         normalized = _normalize_command(command)
         if not normalized:
@@ -115,6 +167,31 @@ class SandboxWhitelistManager:
             self._save_state()
         return True
 
+    def add_blocked_path(self, path: str) -> bool:
+        normalized = _normalize_path(path)
+        if not normalized:
+            return False
+        with self._lock:
+            paths = self._state.setdefault("path_blocklist", [])
+            if normalized in paths:
+                return False
+            paths.append(normalized)
+            paths.sort()
+            self._save_state()
+        return True
+
+    def remove_blocked_path(self, path: str) -> bool:
+        normalized = _normalize_path(path)
+        if not normalized:
+            return False
+        with self._lock:
+            paths = self._state.setdefault("path_blocklist", [])
+            if normalized not in paths:
+                return False
+            paths.remove(normalized)
+            self._save_state()
+        return True
+
     def is_command_allowed(self, command: str) -> bool:
         normalized = _normalize_command(command)
         if not normalized:
@@ -134,21 +211,54 @@ class SandboxWhitelistManager:
                     return True
         return False
 
-    def snapshot(self) -> dict[str, list[str]]:
+    def is_path_blocked(self, path: str) -> bool:
+        normalized = _normalize_path(path)
+        if not normalized:
+            return False
+        with self._lock:
+            entries = self._state.get("path_blocklist", [])
+            for entry in entries:
+                if normalized == entry or normalized.startswith(entry + "/"):
+                    return True
+        return False
+
+    def snapshot(self) -> dict[str, Any]:
         with self._lock:
             return {
                 "command_allowlist": list(self._state.get("command_allowlist", [])),
                 "path_allowlist": list(self._state.get("path_allowlist", [])),
+                "command_rules": dict(self._state.get("command_rules", {})),
+                "default_command_mode": self.get_default_command_mode(),
+                "path_blocklist": list(self._state.get("path_blocklist", [])),
             }
 
-    def _load_state(self) -> dict[str, list[str]]:
+    def _load_state(self) -> dict[str, Any]:
         if not self.state_path or not os.path.exists(self.state_path):
-            return {"command_allowlist": [], "path_allowlist": []}
+            return {
+                "command_allowlist": [],
+                "path_allowlist": [],
+                "command_rules": {},
+                "default_command_mode": self.DEFAULT_COMMAND_MODE,
+                "path_blocklist": [],
+            }
         try:
             with open(self.state_path, "r", encoding="utf-8") as handle:
                 payload = json.load(handle)
             if not isinstance(payload, dict):
-                return {"command_allowlist": [], "path_allowlist": []}
+                return {
+                    "command_allowlist": [],
+                    "path_allowlist": [],
+                    "command_rules": {},
+                    "default_command_mode": self.DEFAULT_COMMAND_MODE,
+                    "path_blocklist": [],
+                }
+            command_rules = {}
+            for key, value in dict(payload.get("command_rules", {}) or {}).items():
+                normalized_key = _normalize_command(str(key))
+                normalized_mode = str(value or "").strip().lower()
+                if normalized_key and normalized_mode in {"allow", "ask", "deny"}:
+                    command_rules[normalized_key] = normalized_mode
+            default_mode = str(payload.get("default_command_mode", self.DEFAULT_COMMAND_MODE) or "").strip().lower()
             return {
                 "command_allowlist": [
                     _normalize_command(item)
@@ -160,9 +270,22 @@ class SandboxWhitelistManager:
                     for item in payload.get("path_allowlist", [])
                     if _normalize_path(str(item))
                 ],
+                "command_rules": command_rules,
+                "default_command_mode": default_mode if default_mode in {"allow", "ask", "deny"} else self.DEFAULT_COMMAND_MODE,
+                "path_blocklist": [
+                    _normalize_path(str(item))
+                    for item in payload.get("path_blocklist", [])
+                    if _normalize_path(str(item))
+                ],
             }
         except Exception:
-            return {"command_allowlist": [], "path_allowlist": []}
+            return {
+                "command_allowlist": [],
+                "path_allowlist": [],
+                "command_rules": {},
+                "default_command_mode": self.DEFAULT_COMMAND_MODE,
+                "path_blocklist": [],
+            }
 
     def _save_state(self) -> None:
         if not self.state_path:
@@ -251,6 +374,9 @@ class PathPolicy:
         for raw in paths:
             normalized = _normalize_path(raw)
             if not normalized:
+                continue
+            if whitelist_manager is not None and whitelist_manager.is_path_blocked(raw):
+                violations.append(f"blocked by path blocklist: {raw}")
                 continue
             if whitelist_manager is not None and whitelist_manager.is_path_allowed(raw):
                 continue
@@ -362,6 +488,11 @@ class SandboxPolicyEngine:
             tool_name = str(function.get("name", "") or "unknown_tool")
             args = _safe_json_loads(str(function.get("arguments", "{}") or "{}"))
             command = self._extract_command(tool_name, args)
+            explicit_command_mode = (
+                self.whitelist_manager.get_command_mode(command)
+                if self.whitelist_manager is not None and command
+                else None
+            )
             if (
                 self.whitelist_manager is not None
                 and command
@@ -403,6 +534,29 @@ class SandboxPolicyEngine:
             if action == "allow" and self.command_policy_enabled and self._is_destructive_file_op(tool_name, args):
                 action = "require_approval"
                 reasons.append("destructive file operation requires approval")
+            if action == "allow" and explicit_command_mode == "deny":
+                action = "deny"
+                reasons.append("blocked by explicit command rule")
+            elif action != "deny" and explicit_command_mode == "ask":
+                action = "require_approval"
+                reasons.append("explicit command rule requires approval")
+            elif explicit_command_mode == "allow":
+                reasons.append("explicit command rule allows execution")
+            elif (
+                action == "allow"
+                and self.whitelist_manager is not None
+                and command
+                and self.command_policy_enabled
+            ):
+                default_mode = self.whitelist_manager.get_default_command_mode()
+                if default_mode == "deny":
+                    action = "deny"
+                    reasons.append("default command policy blocks execution")
+                elif default_mode == "ask":
+                    action = "require_approval"
+                    reasons.append("default command policy requires approval")
+                elif default_mode == "allow":
+                    reasons.append("default command policy allows execution")
             decisions.append(
                 SandboxDecision(
                     tool_call_id=str(tc.get("id", "") or ""),

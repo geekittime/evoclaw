@@ -60,9 +60,20 @@ import {
   refreshVisibleToolsEffectiveForCurrentSession as refreshVisibleToolsEffectiveForCurrentSessionInternal,
 } from "./controllers/agents.ts";
 import { loadAssistantIdentity as loadAssistantIdentityInternal } from "./controllers/assistant-identity.ts";
+import {
+  loadMetaclawSettings,
+  loadMetaclawState,
+  persistMetaclawSettings,
+} from "./controllers/metaclaw.ts";
 import type { DevicePairingList } from "./controllers/devices.ts";
 import type { ExecApprovalRequest } from "./controllers/exec-approval.ts";
 import type { ExecApprovalsFile, ExecApprovalsSnapshot } from "./controllers/exec-approvals.ts";
+import type {
+  MetaclawImportantNotes,
+  MetaclawPendingApproval,
+  MetaclawSandboxPolicy,
+  MetaclawSkillEntry,
+} from "./controllers/metaclaw.ts";
 import type { SkillMessage } from "./controllers/skills.ts";
 import type { GatewayBrowserClient, GatewayHelloOk } from "./gateway.ts";
 import type { Tab } from "./navigation.ts";
@@ -127,6 +138,9 @@ export class OpenClawApp extends LitElement {
     if (isSupportedLocale(this.settings.locale)) {
       void i18n.setLocale(this.settings.locale);
     }
+    const metaclawSettings = loadMetaclawSettings();
+    this.metaclawApiBase = metaclawSettings.apiBase;
+    this.metaclawToken = metaclawSettings.token;
   }
   @state() password = "";
   @state() loginShowGatewayToken = false;
@@ -414,6 +428,21 @@ export class OpenClawApp extends LitElement {
   @state() skillMessages: Record<string, SkillMessage> = {};
   @state() skillsDetailKey: string | null = null;
 
+  @state() metaclawApiBase = "";
+  @state() metaclawToken = "";
+  @state() metaclawLoading = false;
+  @state() metaclawSaving = false;
+  @state() metaclawError: string | null = null;
+  @state() metaclawConnected = false;
+  @state() metaclawSkills: MetaclawSkillEntry[] = [];
+  @state() metaclawSelectedSkillNames: string[] = [];
+  @state() metaclawSelectionCustomized = false;
+  @state() metaclawLatestInjectedSkills: string[] = [];
+  @state() metaclawImportantNotes: MetaclawImportantNotes | null = null;
+  @state() metaclawPendingApprovals: MetaclawPendingApproval[] = [];
+  @state() metaclawSandboxPolicy: MetaclawSandboxPolicy | null = null;
+  private metaclawPollInterval: number | null = null;
+
   @state() healthLoading = false;
   @state() healthResult: HealthSummary | null = null;
   @state() healthError: string | null = null;
@@ -497,6 +526,12 @@ export class OpenClawApp extends LitElement {
     };
     document.addEventListener("keydown", this.globalKeydownHandler);
     handleConnected(this as unknown as Parameters<typeof handleConnected>[0]);
+    void loadMetaclawState(this);
+    if (this.metaclawPollInterval == null) {
+      this.metaclawPollInterval = window.setInterval(() => {
+        void loadMetaclawState(this);
+      }, 10000);
+    }
   }
 
   protected firstUpdated() {
@@ -506,11 +541,27 @@ export class OpenClawApp extends LitElement {
   disconnectedCallback() {
     document.removeEventListener("keydown", this.globalKeydownHandler);
     handleDisconnected(this as unknown as Parameters<typeof handleDisconnected>[0]);
+    if (this.metaclawPollInterval != null) {
+      window.clearInterval(this.metaclawPollInterval);
+      this.metaclawPollInterval = null;
+    }
     super.disconnectedCallback();
   }
 
   protected updated(changed: Map<PropertyKey, unknown>) {
     handleUpdated(this as unknown as Parameters<typeof handleUpdated>[0], changed);
+    if (
+      changed.has("sessionKey") ||
+      (changed.has("chatMessages") && Array.isArray(this.chatMessages) && this.chatMessages.length > 0)
+    ) {
+      void loadMetaclawState(this);
+    }
+    if (changed.has("metaclawApiBase") || changed.has("metaclawToken")) {
+      persistMetaclawSettings({
+        apiBase: this.metaclawApiBase,
+        token: this.metaclawToken,
+      });
+    }
     if (!changed.has("sessionKey") || this.agentsPanel !== "tools") {
       return;
     }

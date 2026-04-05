@@ -4,6 +4,12 @@ import type { CronModelSuggestionsState, CronState } from "./controllers/cron.ts
 import type { DevicePairingList } from "./controllers/devices.ts";
 import type { ExecApprovalRequest } from "./controllers/exec-approval.ts";
 import type { ExecApprovalsFile, ExecApprovalsSnapshot } from "./controllers/exec-approvals.ts";
+import type {
+  MetaclawImportantNotes,
+  MetaclawPendingApproval,
+  MetaclawSandboxPolicy,
+  MetaclawSkillEntry,
+} from "./controllers/metaclaw.ts";
 import type { SkillMessage } from "./controllers/skills.ts";
 import type { GatewayBrowserClient, GatewayHelloOk } from "./gateway.ts";
 import type { Tab } from "./navigation.ts";
@@ -100,6 +106,19 @@ export type AppViewState = {
   execApprovalQueue: ExecApprovalRequest[];
   execApprovalBusy: boolean;
   execApprovalError: string | null;
+  metaclawApiBase: string;
+  metaclawToken: string;
+  metaclawLoading: boolean;
+  metaclawSaving: boolean;
+  metaclawError: string | null;
+  metaclawConnected: boolean;
+  metaclawSkills: MetaclawSkillEntry[];
+  metaclawSelectedSkillNames: string[];
+  metaclawSelectionCustomized: boolean;
+  metaclawLatestInjectedSkills: string[];
+  metaclawImportantNotes: MetaclawImportantNotes | null;
+  metaclawPendingApprovals: MetaclawPendingApproval[];
+  metaclawSandboxPolicy: MetaclawSandboxPolicy | null;
   pendingGatewayUrl: string | null;
   configLoading: boolean;
   configRaw: string;

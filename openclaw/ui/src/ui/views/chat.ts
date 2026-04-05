@@ -97,6 +97,47 @@ export type ChatProps = {
   onSplitRatioChange?: (ratio: number) => void;
   onChatScroll?: (event: Event) => void;
   basePath?: string;
+  metaclaw?: {
+    apiBase: string;
+    token: string;
+    loading: boolean;
+    saving: boolean;
+    connected: boolean;
+    error: string | null;
+    pendingApprovals: Array<{
+      approval_id: string;
+      created_at: string;
+      decisions?: Array<{ tool_name?: string; command?: string; reason?: string; action?: string }>;
+    }>;
+    sandboxPolicy: {
+      command_allowlist: string[];
+      path_allowlist: string[];
+      command_rules: Record<string, "allow" | "ask" | "deny">;
+      default_command_mode: "allow" | "ask" | "deny";
+      path_blocklist: string[];
+    } | null;
+    skills: Array<{ name: string; description: string; category: string }>;
+    selectedSkillNames: string[];
+    selectionCustomized: boolean;
+    latestInjectedSkills: string[];
+    importantNotes: { name: string; description: string; content: string } | null;
+    onApiBaseChange: (value: string) => void;
+    onTokenChange: (value: string) => void;
+    onRefresh: () => void;
+    onApprove: (approvalId: string) => void;
+    onReject: (approvalId: string) => void;
+    onSavePolicy: (policy: {
+      command_allowlist: string[];
+      path_allowlist: string[];
+      command_rules: Record<string, "allow" | "ask" | "deny">;
+      default_command_mode: "allow" | "ask" | "deny";
+      path_blocklist: string[];
+    }) => void;
+    onAddWhitelistEntry: (type: "command" | "path", value: string) => void;
+    onRemoveWhitelistEntry: (type: "command" | "path", value: string) => void;
+    onSaveSkillSelection: (skillNames: string[] | null) => void;
+    onSubmitFeedback: (rating: "good" | "bad", feedback: string) => Promise<void>;
+  };
 };
 
 const COMPACTION_TOAST_DURATION_MS = 5000;
@@ -139,6 +180,15 @@ interface ChatEphemeralState {
   searchOpen: boolean;
   searchQuery: string;
   pinnedExpanded: boolean;
+  feedbackOpen: boolean;
+  feedbackRating: "good" | "bad";
+  feedbackText: string;
+  feedbackSaving: boolean;
+  feedbackMessage: string;
+  metaclawRuleCommand: string;
+  metaclawWhitelistCommand: string;
+  metaclawWhitelistPath: string;
+  metaclawBlockedPath: string;
 }
 
 function createChatEphemeralState(): ChatEphemeralState {
@@ -154,6 +204,15 @@ function createChatEphemeralState(): ChatEphemeralState {
     searchOpen: false,
     searchQuery: "",
     pinnedExpanded: false,
+    feedbackOpen: false,
+    feedbackRating: "good",
+    feedbackText: "",
+    feedbackSaving: false,
+    feedbackMessage: "",
+    metaclawRuleCommand: "",
+    metaclawWhitelistCommand: "",
+    metaclawWhitelistPath: "",
+    metaclawBlockedPath: "",
   };
 }
 
@@ -677,6 +736,257 @@ function renderWelcomeState(props: ChatProps): TemplateResult {
   `;
 }
 
+function renderMetaclawStudio(props: ChatProps, requestUpdate: () => void): TemplateResult | typeof nothing {
+  const state = props.metaclaw;
+  if (!state) {
+    return nothing;
+  }
+  const policy = state.sandboxPolicy;
+  const commandRules = policy ? Object.entries(policy.command_rules) : [];
+  const selected = new Set(state.selectedSkillNames);
+  return html`
+    <section class="metaclaw-studio">
+      <div class="metaclaw-studio__hero">
+        <div>
+          <div class="metaclaw-studio__eyebrow">MetaClaw Studio</div>
+          <div class="metaclaw-studio__title">Feedback, sandbox approvals, skills, and notes</div>
+        </div>
+        <button class="btn btn--ghost" type="button" ?disabled=${state.loading || state.saving} @click=${state.onRefresh}>
+          ${icons.refresh} Refresh
+        </button>
+      </div>
+      <div class="metaclaw-studio__grid">
+        <div class="metaclaw-panel">
+          <div class="metaclaw-panel__title">Connection</div>
+          <input class="input" .value=${state.apiBase} @input=${(e: Event) => state.onApiBaseChange((e.target as HTMLInputElement).value)} placeholder="http://localhost:30000" />
+          <input class="input" .value=${state.token} @input=${(e: Event) => state.onTokenChange((e.target as HTMLInputElement).value)} placeholder="Bearer token (optional)" />
+          <div class="metaclaw-status ${state.connected ? "ok" : "warn"}">${state.connected ? "Connected" : "Unavailable"}</div>
+          ${state.error ? html`<div class="callout danger">${state.error}</div>` : nothing}
+        </div>
+        <div class="metaclaw-panel">
+          <div class="metaclaw-panel__title">Pending Approvals</div>
+          ${state.pendingApprovals.length === 0
+            ? html`<div class="muted">No pending command approvals for this session.</div>`
+            : state.pendingApprovals.map((item) => html`
+                <div class="metaclaw-approval">
+                  <div class="metaclaw-approval__head">
+                    <span class="mono">${item.approval_id}</span>
+                    <span class="muted">${item.created_at}</span>
+                  </div>
+                  ${(item.decisions ?? []).map((decision) => html`
+                    <div class="metaclaw-approval__row">
+                      <strong>${decision.tool_name ?? "tool"}</strong>
+                      <span class="mono">${decision.command ?? ""}</span>
+                      <span class="muted">${decision.reason ?? decision.action ?? ""}</span>
+                    </div>
+                  `)}
+                  <div class="metaclaw-approval__actions">
+                    <button class="btn primary" type="button" ?disabled=${state.saving} @click=${() => state.onApprove(item.approval_id)}>Approve</button>
+                    <button class="btn danger" type="button" ?disabled=${state.saving} @click=${() => state.onReject(item.approval_id)}>Reject</button>
+                  </div>
+                </div>
+              `)}
+        </div>
+        <div class="metaclaw-panel">
+          <div class="metaclaw-panel__title">Command Policy</div>
+          ${policy
+            ? html`
+                <label class="field">
+                  <span>Default command mode</span>
+                  <select
+                    .value=${policy.default_command_mode}
+                    @change=${(e: Event) =>
+                      state.onSavePolicy({
+                        ...policy,
+                        default_command_mode: (e.target as HTMLSelectElement).value as "allow" | "ask" | "deny",
+                      })}
+                  >
+                    <option value="allow">Allow</option>
+                    <option value="ask">Ask</option>
+                    <option value="deny">Deny</option>
+                  </select>
+                </label>
+                <div class="metaclaw-rule-list">
+                  ${commandRules.map(([command, mode]) => html`
+                    <div class="metaclaw-rule-row">
+                      <span class="mono">${command}</span>
+                      <select
+                        .value=${mode}
+                        @change=${(e: Event) => {
+                          const nextMode = (e.target as HTMLSelectElement).value as "allow" | "ask" | "deny";
+                          state.onSavePolicy({ ...policy, command_rules: { ...policy.command_rules, [command]: nextMode } });
+                        }}
+                      >
+                        <option value="allow">Allow</option>
+                        <option value="ask">Ask</option>
+                        <option value="deny">Deny</option>
+                      </select>
+                    </div>
+                  `)}
+                </div>
+                <div class="metaclaw-inline-form">
+                  <input class="input" .value=${vs.metaclawRuleCommand} @input=${(e: Event) => { vs.metaclawRuleCommand = (e.target as HTMLInputElement).value; requestUpdate(); }} placeholder="Add command rule, e.g. pwd" />
+                  <button class="btn" type="button" ?disabled=${!vs.metaclawRuleCommand.trim() || state.saving} @click=${() => {
+                    const command = vs.metaclawRuleCommand.trim();
+                    vs.metaclawRuleCommand = "";
+                    requestUpdate();
+                    state.onSavePolicy({ ...policy, command_rules: { ...policy.command_rules, [command]: "ask" } });
+                  }}>Add Ask Rule</button>
+                </div>
+              `
+            : html`<div class="muted">Sandbox policy unavailable.</div>`}
+        </div>
+        <div class="metaclaw-panel">
+          <div class="metaclaw-panel__title">Allow / Block Paths</div>
+          ${policy
+            ? html`
+                <div class="metaclaw-chip-group">
+                  ${policy.path_allowlist.map((path) => html`<button class="chip" type="button" @click=${() => state.onRemoveWhitelistEntry("path", path)}>${path} ${icons.x}</button>`)}
+                </div>
+                <div class="metaclaw-inline-form">
+                  <input class="input" .value=${vs.metaclawWhitelistPath} @input=${(e: Event) => { vs.metaclawWhitelistPath = (e.target as HTMLInputElement).value; requestUpdate(); }} placeholder="Allow path" />
+                  <button class="btn" type="button" ?disabled=${!vs.metaclawWhitelistPath.trim() || state.saving} @click=${() => {
+                    const value = vs.metaclawWhitelistPath.trim();
+                    vs.metaclawWhitelistPath = "";
+                    requestUpdate();
+                    state.onAddWhitelistEntry("path", value);
+                  }}>Allow</button>
+                </div>
+                <div class="metaclaw-chip-group">
+                  ${policy.path_blocklist.map((path) => html`
+                    <button class="chip chip--danger" type="button" @click=${() =>
+                      state.onSavePolicy({
+                        ...policy,
+                        path_blocklist: policy.path_blocklist.filter((item) => item !== path),
+                      })}
+                    >
+                      ${path} ${icons.x}
+                    </button>
+                  `)}
+                </div>
+                <div class="metaclaw-inline-form">
+                  <input class="input" .value=${vs.metaclawBlockedPath} @input=${(e: Event) => { vs.metaclawBlockedPath = (e.target as HTMLInputElement).value; requestUpdate(); }} placeholder="Block path" />
+                  <button class="btn danger" type="button" ?disabled=${!vs.metaclawBlockedPath.trim() || state.saving} @click=${() => {
+                    const value = vs.metaclawBlockedPath.trim();
+                    vs.metaclawBlockedPath = "";
+                    requestUpdate();
+                    state.onSavePolicy({ ...policy, path_blocklist: [...policy.path_blocklist, value] });
+                  }}>Block</button>
+                </div>
+                <div class="metaclaw-chip-group">
+                  ${policy.command_allowlist.map((command) => html`<button class="chip" type="button" @click=${() => state.onRemoveWhitelistEntry("command", command)}>${command} ${icons.x}</button>`)}
+                </div>
+                <div class="metaclaw-inline-form">
+                  <input class="input" .value=${vs.metaclawWhitelistCommand} @input=${(e: Event) => { vs.metaclawWhitelistCommand = (e.target as HTMLInputElement).value; requestUpdate(); }} placeholder="Always allow command" />
+                  <button class="btn" type="button" ?disabled=${!vs.metaclawWhitelistCommand.trim() || state.saving} @click=${() => {
+                    const value = vs.metaclawWhitelistCommand.trim();
+                    vs.metaclawWhitelistCommand = "";
+                    requestUpdate();
+                    state.onAddWhitelistEntry("command", value);
+                  }}>Allow</button>
+                </div>
+              `
+            : nothing}
+        </div>
+        <div class="metaclaw-panel">
+          <div class="metaclaw-panel__title">Skills</div>
+          <div class="metaclaw-panel__sub">
+            ${state.selectionCustomized ? "Custom selection" : "All skills enabled by default"}
+            ${state.latestInjectedSkills.length ? html`<span> | Last injected: ${state.latestInjectedSkills.join(", ")}</span>` : nothing}
+          </div>
+          <div class="metaclaw-skill-list">
+            ${state.skills.map((skill) => html`
+              <label class="metaclaw-skill">
+                <input
+                  type="checkbox"
+                  .checked=${selected.has(skill.name)}
+                  @change=${(e: Event) => {
+                    const next = new Set(selected);
+                    if ((e.target as HTMLInputElement).checked) {
+                      next.add(skill.name);
+                    } else {
+                      next.delete(skill.name);
+                    }
+                    state.onSaveSkillSelection([...next]);
+                  }}
+                />
+                <span>
+                  <strong>${skill.name}</strong>
+                  <small>${skill.category}</small>
+                  <span>${skill.description}</span>
+                </span>
+              </label>
+            `)}
+          </div>
+          <div class="metaclaw-approval__actions">
+            <button class="btn" type="button" ?disabled=${state.saving} @click=${() => state.onSaveSkillSelection(null)}>Use All Skills</button>
+            <button class="btn" type="button" ?disabled=${state.saving} @click=${() => state.onSaveSkillSelection([])}>Disable All</button>
+          </div>
+        </div>
+        <div class="metaclaw-panel metaclaw-panel--notes">
+          <div class="metaclaw-panel__title">${state.importantNotes?.name ?? "important-notes"}</div>
+          <div class="metaclaw-panel__sub">${state.importantNotes?.description ?? "Persistent notes appended from bad-answer feedback."}</div>
+          <pre class="metaclaw-notes">${state.importantNotes?.content ?? "No important notes yet."}</pre>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderLatestFeedback(props: ChatProps, requestUpdate: () => void): TemplateResult | typeof nothing {
+  if (!props.metaclaw) {
+    return nothing;
+  }
+  return html`
+    <div class="metaclaw-feedback">
+      <div class="metaclaw-feedback__title">Feedback for the latest agent answer</div>
+      <div class="metaclaw-feedback__actions">
+        <button class="btn ${vs.feedbackRating === "good" ? "primary" : ""}" type="button" @click=${() => { vs.feedbackOpen = true; vs.feedbackRating = "good"; requestUpdate(); }}>
+          ${icons.check} Good
+        </button>
+        <button class="btn ${vs.feedbackRating === "bad" ? "danger" : ""}" type="button" @click=${() => { vs.feedbackOpen = true; vs.feedbackRating = "bad"; requestUpdate(); }}>
+          ${icons.x} Bad
+        </button>
+      </div>
+      ${vs.feedbackOpen
+        ? html`
+            <textarea
+              class="metaclaw-feedback__input"
+              .value=${vs.feedbackText}
+              @input=${(e: Event) => {
+                vs.feedbackText = (e.target as HTMLTextAreaElement).value;
+                requestUpdate();
+              }}
+              placeholder="Tell MetaClaw what was good or what should have been done better."
+            ></textarea>
+            <div class="metaclaw-feedback__actions">
+              <button class="btn primary" type="button" ?disabled=${vs.feedbackSaving} @click=${async () => {
+                vs.feedbackSaving = true;
+                vs.feedbackMessage = "";
+                requestUpdate();
+                try {
+                  await props.metaclaw!.onSubmitFeedback(vs.feedbackRating, vs.feedbackText.trim());
+                  vs.feedbackMessage = vs.feedbackRating === "bad" ? "Lesson appended to important-notes." : "Feedback recorded.";
+                  vs.feedbackText = "";
+                } finally {
+                  vs.feedbackSaving = false;
+                  requestUpdate();
+                }
+              }}>Submit</button>
+              <button class="btn" type="button" ?disabled=${vs.feedbackSaving} @click=${() => {
+                vs.feedbackOpen = false;
+                vs.feedbackText = "";
+                vs.feedbackMessage = "";
+                requestUpdate();
+              }}>Cancel</button>
+            </div>
+            ${vs.feedbackMessage ? html`<div class="callout success">${vs.feedbackMessage}</div>` : nothing}
+          `
+        : nothing}
+    </div>
+  `;
+}
+
 function renderSearchBar(requestUpdate: () => void): TemplateResult | typeof nothing {
   if (!vs.searchOpen) {
     return nothing;
@@ -1186,6 +1496,7 @@ export function renderChat(props: ChatProps) {
           : nothing
       }
       ${renderSearchBar(requestUpdate)} ${renderPinnedSection(props, pinned, requestUpdate)}
+      ${renderMetaclawStudio(props, requestUpdate)}
 
       <div class="chat-split-container ${sidebarOpen ? "chat-split-container--open" : ""}">
         <div
@@ -1254,6 +1565,7 @@ export function renderChat(props: ChatProps) {
       ${renderFallbackIndicator(props.fallbackStatus)}
       ${renderCompactionIndicator(props.compactionStatus)}
       ${renderContextNotice(activeSession, props.sessions?.defaults?.contextTokens ?? null)}
+      ${renderLatestFeedback(props, requestUpdate)}
       ${
         props.showNewMessages
           ? html`

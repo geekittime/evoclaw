@@ -791,6 +791,7 @@ class MetaClawAPIServer:
         self._session_context_summaries: dict[str, str] = {}
         self._feedback_by_session: dict[str, list[dict[str, Any]]] = {}
         self._latest_injected_skills: dict[str, list[str]] = {}
+        self._session_skill_overrides: dict[str, list[str] | None] = {}
         self._user_profiles: dict[str, list[str]] = self._load_user_profiles()
         self._task_briefs: dict[str, dict[str, list[str]]] = self._load_task_briefs()
         self._latest_session_reports: dict[str, dict[str, Any]] = {}
@@ -1308,6 +1309,44 @@ class MetaClawAPIServer:
             )
             return JSONResponse(content=result)
 
+        @app.get("/v1/skills")
+        async def get_skills(
+            request: Request,
+            session_id: str = "",
+            authorization: Optional[str] = Header(default=None),
+        ):
+            owner: MetaClawAPIServer = request.app.state.owner
+            await owner._check_auth(authorization)
+            return JSONResponse(content=owner._build_skills_payload(session_id=session_id.strip()))
+
+        @app.put("/v1/skills/selection")
+        async def set_skill_selection(
+            request: Request,
+            authorization: Optional[str] = Header(default=None),
+        ):
+            owner: MetaClawAPIServer = request.app.state.owner
+            await owner._check_auth(authorization)
+            body = await request.json()
+            session_id = str(body.get("session_id", "") or "").strip()
+            if not session_id:
+                raise HTTPException(status_code=400, detail="session_id is required")
+            skill_names_raw = body.get("skill_names")
+            if skill_names_raw is None:
+                owner._session_skill_overrides.pop(session_id, None)
+            elif not isinstance(skill_names_raw, list):
+                raise HTTPException(status_code=400, detail="skill_names must be a list or null")
+            else:
+                requested = {
+                    str(item or "").strip()
+                    for item in skill_names_raw
+                    if str(item or "").strip()
+                }
+                known_names = {item.get("name", "") for item in owner._list_all_skills()}
+                owner._session_skill_overrides[session_id] = sorted(
+                    name for name in requested if name in known_names
+                )
+            return JSONResponse(content=owner._build_skills_payload(session_id=session_id))
+
         @app.get("/v1/sandbox/pending")
         async def sandbox_pending(
             request: Request,
@@ -1332,6 +1371,59 @@ class MetaClawAPIServer:
             if owner._sandbox_whitelist is None:
                 raise HTTPException(status_code=503, detail="sandbox whitelist is not enabled")
             return JSONResponse(content=owner._sandbox_whitelist.snapshot())
+
+        @app.put("/v1/sandbox/policy")
+        async def sandbox_policy_set(
+            request: Request,
+            authorization: Optional[str] = Header(default=None),
+        ):
+            owner: MetaClawAPIServer = request.app.state.owner
+            await owner._check_auth(authorization)
+            if owner._sandbox_whitelist is None:
+                raise HTTPException(status_code=503, detail="sandbox whitelist is not enabled")
+            body = await request.json()
+            command_rules = body.get("command_rules")
+            path_blocklist = body.get("path_blocklist")
+            default_command_mode = str(body.get("default_command_mode", "") or "").strip().lower()
+            changed = False
+            if default_command_mode:
+                if default_command_mode not in {"allow", "ask", "deny"}:
+                    raise HTTPException(status_code=400, detail="default_command_mode must be allow/ask/deny")
+                changed = owner._sandbox_whitelist.set_default_command_mode(default_command_mode) or changed
+            if command_rules is not None:
+                if not isinstance(command_rules, dict):
+                    raise HTTPException(status_code=400, detail="command_rules must be an object")
+                current_rules = owner._sandbox_whitelist.snapshot().get("command_rules", {})
+                for command in list(current_rules.keys()):
+                    if command not in command_rules:
+                        changed = owner._sandbox_whitelist.remove_command_mode(command) or changed
+                for command, mode in command_rules.items():
+                    normalized_command = str(command or "").strip()
+                    normalized_mode = str(mode or "").strip().lower()
+                    if not normalized_command or normalized_mode not in {"allow", "ask", "deny"}:
+                        raise HTTPException(status_code=400, detail="command_rules entries must be allow/ask/deny")
+                    changed = owner._sandbox_whitelist.set_command_mode(normalized_command, normalized_mode) or changed
+            if path_blocklist is not None:
+                if not isinstance(path_blocklist, list):
+                    raise HTTPException(status_code=400, detail="path_blocklist must be a list")
+                current_paths = owner._sandbox_whitelist.snapshot().get("path_blocklist", [])
+                next_paths = {
+                    str(item or "").strip()
+                    for item in path_blocklist
+                    if str(item or "").strip()
+                }
+                for path in current_paths:
+                    if path not in next_paths:
+                        changed = owner._sandbox_whitelist.remove_blocked_path(path) or changed
+                for path in next_paths:
+                    changed = owner._sandbox_whitelist.add_blocked_path(path) or changed
+            owner._append_sandbox_audit(
+                "policy_updated",
+                session_id="",
+                changed=changed,
+                snapshot=owner._sandbox_whitelist.snapshot(),
+            )
+            return JSONResponse(content={"ok": True, "changed": changed, **owner._sandbox_whitelist.snapshot()})
 
         @app.post("/v1/sandbox/whitelist")
         async def sandbox_whitelist_add(
@@ -2864,6 +2956,60 @@ class MetaClawAPIServer:
                     return skill
         return None
 
+    def _list_all_skills(self) -> list[dict[str, Any]]:
+        if not self.skill_manager:
+            return []
+        items: list[dict[str, Any]] = []
+        for skill in self.skill_manager.skills.get("general_skills", []):
+            items.append({**skill, "category": skill.get("category", "general") or "general"})
+        for skill in self.skill_manager.skills.get("common_mistakes", []):
+            items.append({**skill, "category": skill.get("category", "common_mistakes") or "common_mistakes"})
+        for category, bucket in self.skill_manager.skills.get("task_specific_skills", {}).items():
+            for skill in bucket:
+                items.append({**skill, "category": skill.get("category", category) or category})
+        items.sort(key=lambda item: (str(item.get("category", "")), str(item.get("name", ""))))
+        return items
+
+    def _get_effective_skill_selection(self, session_id: str) -> tuple[bool, set[str]]:
+        selected = self._session_skill_overrides.get(session_id)
+        if selected is None:
+            return False, {str(item.get("name", "")).strip() for item in self._list_all_skills() if str(item.get("name", "")).strip()}
+        return True, {str(name or "").strip() for name in selected if str(name or "").strip()}
+
+    def _filter_skills_for_session(self, skills: list[dict], session_id: str) -> list[dict]:
+        if not session_id:
+            return skills
+        customized, selected = self._get_effective_skill_selection(session_id)
+        if not customized:
+            return skills
+        return [
+            skill
+            for skill in skills
+            if isinstance(skill, dict) and str(skill.get("name", "")).strip() in selected
+        ]
+
+    def _build_skills_payload(self, session_id: str = "") -> dict[str, Any]:
+        important = self._ensure_important_skill_exists() if self.skill_manager else None
+        customized, selected = self._get_effective_skill_selection(session_id) if session_id else (False, set())
+        return {
+            "skills": [
+                {
+                    "name": item.get("name", ""),
+                    "description": item.get("description", ""),
+                    "category": item.get("category", "general"),
+                }
+                for item in self._list_all_skills()
+            ],
+            "selection_customized": customized,
+            "selected_skill_names": sorted(selected) if session_id else [],
+            "latest_injected_skills": list(self._latest_injected_skills.get(session_id, [])) if session_id else [],
+            "important_notes": {
+                "name": important.get("name", "") if important else "",
+                "description": important.get("description", "") if important else "",
+                "content": important.get("content", "") if important else "",
+            },
+        }
+
     def _build_default_important_skill(self) -> dict[str, Any]:
         return {
             "name": self.config.important_feedback_skill_name,
@@ -3532,6 +3678,7 @@ class MetaClawAPIServer:
             return messages
 
         skills = self.skill_manager.retrieve(task_desc, top_k=self.config.skill_top_k)
+        skills = self._filter_skills_for_session(skills, session_id=session_id)
         if not skills:
             return messages
 
@@ -3952,6 +4099,7 @@ class MetaClawAPIServer:
         skills = self.skill_manager.retrieve_relevant(
             task_desc, top_k=min(self.config.skill_top_k, 5),
         )
+        skills = self._filter_skills_for_session(skills, session_id=session_id)
         skill_names = [
             s.get("name", s.get("id", "unknown_skill"))
             for s in skills
