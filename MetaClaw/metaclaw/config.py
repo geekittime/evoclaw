@@ -186,6 +186,7 @@ class MetaClawConfig:
     # ------------------------------------------------------------------ #
     # Scheduler (meta-learning: gate slow RL updates to idle windows)     #
     # ------------------------------------------------------------------ #
+    
     scheduler_enabled: bool = True
     scheduler_idle_threshold_minutes: int = 30
     scheduler_sleep_start: str = "23:00"   # HH:MM 24h local time
