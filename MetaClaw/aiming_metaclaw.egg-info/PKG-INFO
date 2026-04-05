@@ -1,0 +1,30 @@
+Metadata-Version: 2.4
+Name: aiming-metaclaw
+Version: 0.4.1
+Summary: OpenClaw skill injection and RL training — one-click deployment
+Requires-Python: >=3.10
+License-File: LICENSE
+Requires-Dist: click>=8.0
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: fastapi
+Requires-Dist: uvicorn[standard]
+Requires-Dist: httpx
+Requires-Dist: tiktoken
+Provides-Extra: rl
+Requires-Dist: torch; extra == "rl"
+Requires-Dist: transformers>=4.51.1; extra == "rl"
+Requires-Dist: tinker; extra == "rl"
+Provides-Extra: embedding
+Requires-Dist: numpy; extra == "embedding"
+Requires-Dist: sentence-transformers; extra == "embedding"
+Provides-Extra: evolve
+Requires-Dist: openai; extra == "evolve"
+Provides-Extra: wandb
+Requires-Dist: wandb; extra == "wandb"
+Provides-Extra: scheduler
+Requires-Dist: google-api-python-client>=2.0; extra == "scheduler"
+Requires-Dist: google-auth-oauthlib>=1.0; extra == "scheduler"
+Requires-Dist: google-auth-httplib2; extra == "scheduler"
+Provides-Extra: all
+Requires-Dist: metaclaw[embedding,evolve,rl,scheduler,wandb]; extra == "all"
+Dynamic: license-file
