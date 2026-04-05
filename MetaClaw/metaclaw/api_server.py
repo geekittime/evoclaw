@@ -157,7 +157,7 @@ _KIMI_TOOL_CALL_RE = re.compile(
 )
 _QWEN_TOOL_CALL_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL)
 _INLINE_FEEDBACK_PATTERNS = [
-    re.compile(r"^/(?:feedback|fb)\s+(good|bad)\s*(.*)$", re.IGNORECASE),
+    re.compile(r"^/(?:feedback|fb|fd)\s+(good|bad)\s*(.*)$", re.IGNORECASE),
 ]
 _INLINE_APPROVAL_RE = re.compile(r"^/(approve|reject)\s*([A-Za-z0-9_-]+)?\s*$", re.IGNORECASE)
 
@@ -480,7 +480,7 @@ def _parse_inline_feedback(text: str) -> tuple[str, str] | None:
         return None
 
     ascii_match = re.search(
-        r"(?:^|\s)(?:/(?:feedback|fb)|feedback|fb)\s+(good|bad)\b(.*)$",
+        r"(?:^|\s)(?:/(?:feedback|fb|fd)|feedback|fb|fd)\s+(good|bad)\b(.*)$",
         raw,
         re.IGNORECASE,
     )
@@ -609,6 +609,68 @@ def _extract_preference_clauses(text: str) -> list[str]:
             if len(seg) >= 4 and seg not in results:
                 results.append(seg)
     return results[:4]
+
+
+def _strip_command_wrappers_v2(text: str) -> str:
+    value = (text or "").strip()
+    if not value:
+        return ""
+    pairs = [("<", ">"), ("`", "`"), ('"', '"'), ("'", "'")]
+    changed = True
+    while changed and len(value) >= 2:
+        changed = False
+        for left, right in pairs:
+            if value.startswith(left) and value.endswith(right):
+                value = value[len(left):-len(right)].strip()
+                changed = True
+    return value
+
+
+def _parse_inline_whitelist_v2(text: str) -> tuple[str, str, str] | None:
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    lowered = " ".join(raw.lower().split())
+
+    cn_show_whitelist = chr(0x67e5) + chr(0x770b) + chr(0x767d) + chr(0x540d) + chr(0x5355)
+    cn_display_whitelist = chr(0x663e) + chr(0x793a) + chr(0x767d) + chr(0x540d) + chr(0x5355)
+    cn_allow = chr(0x5141) + chr(0x8bb8)
+    cn_remove_allow = chr(0x79fb) + chr(0x9664) + cn_allow
+    cn_command = chr(0x547d) + chr(0x4ee4)
+    cn_path = chr(0x8def) + chr(0x5f84)
+
+    if lowered in {"whitelist", "allowlist", "whitelist show", "allowlist show", "show whitelist", "show allowlist"}:
+        return "list", "", ""
+    if raw in {cn_show_whitelist, cn_display_whitelist}:
+        return "list", "", ""
+
+    match = re.search(r"^(?:sandbox\s+)?(allow|unallow)\s+(command|path)\s+(.+?)\s*$", raw, re.IGNORECASE)
+    if match:
+        return (
+            str(match.group(1) or "").strip().lower(),
+            str(match.group(2) or "").strip().lower(),
+            _strip_command_wrappers_v2(str(match.group(3) or "").strip()),
+        )
+
+    match = re.search(
+        r"^(?:sandbox\s+)?whitelist\s+(add|remove)\s+(command|path)\s+(.+?)\s*$",
+        raw,
+        re.IGNORECASE,
+    )
+    if match:
+        action = "allow" if str(match.group(1) or "").strip().lower() == "add" else "unallow"
+        return (
+            action,
+            str(match.group(2) or "").strip().lower(),
+            _strip_command_wrappers_v2(str(match.group(3) or "").strip()),
+        )
+
+    match = re.search(rf"^({cn_allow}|{cn_remove_allow})\s*({cn_command}|{cn_path})\s+(.+?)\s*$", raw)
+    if match:
+        action = "allow" if str(match.group(1) or "").strip() == cn_allow else "unallow"
+        target_type = "command" if str(match.group(2) or "").strip() == cn_command else "path"
+        return action, target_type, _strip_command_wrappers_v2(str(match.group(3) or "").strip())
+    return None
 
 
 def _resolve_record_path(record_dir: str, path: str) -> str:
@@ -2113,7 +2175,7 @@ class MetaClawAPIServer:
             raise HTTPException(status_code=400, detail="messages must be a non-empty list")
         self._latest_injected_skills.pop(session_id, None)
         latest_user_text = _extract_last_user_instruction(messages)
-        inline_whitelist = _parse_inline_whitelist(latest_user_text) if self.config.sandbox_enabled else None
+        inline_whitelist = _parse_inline_whitelist_v2(latest_user_text) if self.config.sandbox_enabled else None
         if inline_whitelist is not None:
             action, target_type, value = inline_whitelist
             logger.info(
