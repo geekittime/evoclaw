@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createInitialMetaclawSectionsState,
   loadMetaclawState,
+  resolveMetaclawApproval,
   submitMetaclawFeedback,
   type MetaclawState,
 } from "./metaclaw.ts";
@@ -192,6 +193,67 @@ describe("loadMetaclawState", () => {
 
     expect(result.session_id).toBe("tui-deepseek-chat");
     expect(fetchMock).toHaveBeenCalledTimes(3);
+
+    vi.unstubAllGlobals();
+  });
+
+  it("retries approval resolution against fallback MetaClaw sessions when the primary session has no pending record", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/openclaw/__openclaw/metaclaw/v1/sandbox/approve")) {
+        const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+        if (body.session_id === "agent:main:main") {
+          return jsonResponse({ detail: "pending approval not found" }, { status: 404 });
+        }
+        expect(body).toMatchObject({
+          session_id: "tui-deepseek-chat",
+          approval_id: "appr_505b16cb41c5",
+        });
+        return jsonResponse({ ok: true });
+      }
+      if (url.endsWith("/openclaw/__openclaw/metaclaw/v1/skills?session_id=agent%3Amain%3Amain")) {
+        return jsonResponse({
+          skills: [{ name: "security-triage", description: "desc", category: "security" }],
+          selection_customized: true,
+          selected_skill_names: ["security-triage"],
+          latest_injected_skills: ["security-triage"],
+          important_notes: {
+            name: "important-notes",
+            description: "notes",
+            content: "Remember the operator preference.",
+          },
+        });
+      }
+      if (
+        url.endsWith(
+          "/openclaw/__openclaw/metaclaw/v1/sandbox/pending?session_id=agent%3Amain%3Amain",
+        )
+      ) {
+        return jsonResponse({ pending: [] });
+      }
+      if (url.endsWith("/openclaw/__openclaw/metaclaw/v1/sandbox/whitelist")) {
+        return jsonResponse({
+          command_allowlist: [],
+          path_allowlist: [],
+          command_rules: {},
+          default_command_mode: "ask",
+          path_blocklist: [],
+        });
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+
+    const state = createState();
+    await resolveMetaclawApproval(
+      state,
+      "appr_505b16cb41c5",
+      "approve",
+      ["tui-deepseek-chat"],
+    );
+
+    expect(state.metaclawError).toBeNull();
+    expect(fetchMock).toHaveBeenCalled();
 
     vi.unstubAllGlobals();
   });

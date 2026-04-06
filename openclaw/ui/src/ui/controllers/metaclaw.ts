@@ -471,17 +471,53 @@ export async function resolveMetaclawApproval(
   state: MetaclawState,
   approvalId: string,
   decision: "approve" | "reject",
+  fallbackSessionIds: string[] = [],
 ) {
   state.metaclawSaving = true;
   state.metaclawError = null;
   try {
-    await metaclawRequest(state, `/v1/sandbox/${decision}`, {
-      method: "POST",
-      body: JSON.stringify({
-        session_id: state.sessionKey,
-        approval_id: approvalId,
-      }),
-    });
+    const attempts: string[] = [];
+    const seen = new Set<string>();
+    const addAttempt = (sessionId: string) => {
+      const normalized = sessionId.trim();
+      if (!normalized || seen.has(normalized)) {
+        return;
+      }
+      seen.add(normalized);
+      attempts.push(normalized);
+    };
+    addAttempt(state.sessionKey);
+    for (const fallbackSessionId of fallbackSessionIds) {
+      addAttempt(fallbackSessionId);
+    }
+
+    let lastError: unknown = null;
+    let resolved = false;
+    for (const sessionId of attempts) {
+      try {
+        await metaclawRequest(state, `/v1/sandbox/${decision}`, {
+          method: "POST",
+          body: JSON.stringify({
+            session_id: sessionId,
+            approval_id: approvalId,
+          }),
+        });
+        resolved = true;
+        break;
+      } catch (error) {
+        const requestError = toMetaclawRequestError(error);
+        lastError = requestError;
+        const shouldRetry =
+          requestError.statusCode === 404 &&
+          requestError.message.toLowerCase().includes("pending approval not found");
+        if (!shouldRetry) {
+          throw requestError;
+        }
+      }
+    }
+    if (!resolved) {
+      throw toMetaclawRequestError(lastError);
+    }
     await loadMetaclawState(state);
   } catch (error) {
     applyMutationError(state, error);

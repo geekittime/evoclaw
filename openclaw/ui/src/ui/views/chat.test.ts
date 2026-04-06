@@ -968,6 +968,59 @@ describe("chat view", () => {
     }
   });
 
+  it("shows a MetaClaw approval modal from assistant approval text even when pending approvals are empty", async () => {
+    const onApprove = vi.fn(async () => undefined);
+    const container = document.createElement("div");
+    cleanupChatModuleState();
+    try {
+      const props = createProps({
+        metaclaw: createMetaclawProps({
+          pendingApprovals: [],
+          onApprove,
+        }),
+        messages: [
+          {
+            role: "assistant",
+            content: `这个工具在调用前需要获得你的允许。
+Approval ID: appr_505b16cb41c5
+使用 approve 进行批准，或使用 reject 进行拒绝。
+如果有多个待处理的批准，你也可以使用 approve <approval_id> 或 reject <approval_id>.
+
+exec (critical): require_approval | destructive delete command`,
+            timestamp: 1000,
+          },
+        ],
+      });
+
+      const rerender = () => {
+        render(
+          renderChat({
+            ...props,
+            onRequestUpdate: rerender,
+          }),
+          container,
+        );
+      };
+
+      rerender();
+
+      expect(container.textContent).toContain("MetaClaw approval needed");
+      expect(container.textContent).toContain("appr_505b16cb41c5");
+      expect(container.textContent).toContain("destructive delete command");
+
+      const approveButton = Array.from(container.querySelectorAll("button")).find((button) =>
+        button.textContent?.includes("Approve"),
+      );
+      approveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flushTasks();
+
+      expect(onApprove).toHaveBeenCalledWith("appr_505b16cb41c5");
+      expect(container.textContent).not.toContain("MetaClaw approval needed");
+    } finally {
+      cleanupChatModuleState();
+    }
+  });
+
   it("renders answer-level MetaClaw feedback buttons even when assistant turns omit turn metadata", () => {
     const container = document.createElement("div");
     render(

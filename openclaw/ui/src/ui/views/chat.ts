@@ -39,6 +39,7 @@ import type { ChatAttachment, ChatQueueItem } from "../ui-types.ts";
 import { agentLogoUrl, resolveAgentAvatarUrl } from "./agents-utils.ts";
 import {
   createChatMetaclawViewState,
+  parseMetaclawApprovalPromptCandidate,
   renderAssistantFeedback,
   renderMetaclawPendingApprovalsInline,
   renderMetaclawPendingApprovalPrompt,
@@ -652,6 +653,30 @@ function findPreviousUserInstruction(chatItems: ChatItem[], currentIndex: number
   return "";
 }
 
+function findLatestMetaclawApprovalPrompt(
+  chatItems: Array<ChatItem | MessageGroup>,
+  dismissedApprovalIds: string[],
+) {
+  for (let index = chatItems.length - 1; index >= 0; index -= 1) {
+    const candidate = chatItems[index];
+    if (candidate?.kind !== "group") {
+      continue;
+    }
+    if (normalizeRoleForGrouping(candidate.role) !== "assistant") {
+      continue;
+    }
+    const parsed = parseMetaclawApprovalPromptCandidate(extractGroupText(candidate));
+    if (!parsed) {
+      continue;
+    }
+    if (dismissedApprovalIds.includes(parsed.approvalId)) {
+      continue;
+    }
+    return parsed;
+  }
+  return null;
+}
+
 /**
  * Export chat markdown - delegates to shared utility.
  */
@@ -970,6 +995,9 @@ export function renderChat(props: ChatProps) {
   };
 
   const chatItems = buildChatItems(props);
+  const metaclawApprovalPrompt = props.metaclaw
+    ? findLatestMetaclawApprovalPrompt(chatItems, metaclawVs.dismissedApprovalIds)
+    : null;
   const isEmpty = chatItems.length === 0 && !props.loading;
 
   const thread = html`
@@ -1290,7 +1318,12 @@ export function renderChat(props: ChatProps) {
       ${renderFallbackIndicator(props.fallbackStatus)}
       ${renderCompactionIndicator(props.compactionStatus)}
       ${renderContextNotice(activeSession, props.sessions?.defaults?.contextTokens ?? null)}
-      ${renderMetaclawPendingApprovalPrompt(props.metaclaw)}
+      ${renderMetaclawPendingApprovalPrompt(
+        props.metaclaw,
+        metaclawVs,
+        requestUpdate,
+        metaclawApprovalPrompt,
+      )}
       ${props.showNewMessages
         ? html`
             <button class="chat-new-messages" type="button" @click=${props.onScrollToBottom}>

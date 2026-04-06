@@ -120,7 +120,7 @@ import { renderOverview } from "./views/overview.ts";
 // Each loader resolves once; subsequent calls return the cached module.
 type LazyState<T> = { mod: T | null; promise: Promise<T> | null };
 
-function buildMetaclawFeedbackFallbackSessionIds(
+function buildMetaclawFallbackSessionIds(
   state: Pick<
     AppViewState,
     "sessionKey" | "chatModelOverrides" | "chatModelCatalog" | "sessionsResult"
@@ -1567,8 +1567,20 @@ export function renderApp(state: AppViewState) {
                 onApiBaseChange: (value) => (state.metaclawApiBase = value),
                 onTokenChange: (value) => (state.metaclawToken = value),
                 onRefresh: () => loadMetaclawState(state),
-                onApprove: (approvalId) => resolveMetaclawApproval(state, approvalId, "approve"),
-                onReject: (approvalId) => resolveMetaclawApproval(state, approvalId, "reject"),
+                onApprove: (approvalId) =>
+                  resolveMetaclawApproval(
+                    state,
+                    approvalId,
+                    "approve",
+                    buildMetaclawFallbackSessionIds(state),
+                  ),
+                onReject: (approvalId) =>
+                  resolveMetaclawApproval(
+                    state,
+                    approvalId,
+                    "reject",
+                    buildMetaclawFallbackSessionIds(state),
+                  ),
                 onSavePolicy: (policy) => saveMetaclawSandboxPolicy(state, policy),
                 onAddWhitelistEntry: (type, value) => addMetaclawWhitelistEntry(state, type, value),
                 onRemoveWhitelistEntry: (type, value) =>
@@ -1582,7 +1594,7 @@ export function renderApp(state: AppViewState) {
                     feedback,
                     responseText,
                     instructionText,
-                    buildMetaclawFeedbackFallbackSessionIds(state),
+                    buildMetaclawFallbackSessionIds(state),
                   );
                   await loadMetaclawState(state);
                   return result;
