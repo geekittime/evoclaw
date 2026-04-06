@@ -36,6 +36,15 @@ export function buildControlUiCspHeader(opts?: { inlineScriptHashes?: string[] }
   const scriptSrc = hashes?.length
     ? `script-src 'self' ${hashes.map((h) => `'${h}'`).join(" ")}`
     : "script-src 'self'";
+  const connectSrc = [
+    "'self'",
+    "ws:",
+    "wss:",
+    "http://localhost:30000",
+    "http://127.0.0.1:30000",
+    "ws://localhost:30000",
+    "ws://127.0.0.1:30000",
+  ].join(" ");
   return [
     "default-src 'self'",
     "base-uri 'none'",
@@ -45,6 +54,6 @@ export function buildControlUiCspHeader(opts?: { inlineScriptHashes?: string[] }
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "img-src 'self' data: https:",
     "font-src 'self' https://fonts.gstatic.com",
-    "connect-src 'self' ws: wss:",
+    `connect-src ${connectSrc}`,
   ].join("; ");
 }

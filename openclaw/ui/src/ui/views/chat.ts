@@ -991,7 +991,7 @@ function renderMetaclawStudio(props: ChatProps, requestUpdate: () => void): Temp
         </div>
         <div class="metaclaw-panel metaclaw-panel--notes">
           <div class="metaclaw-panel__title">${state.importantNotes?.name ?? "important-notes"}</div>
-          <div class="metaclaw-panel__sub">${state.importantNotes?.description ?? "Persistent notes appended from bad-answer feedback."}</div>
+          <div class="metaclaw-panel__sub">${state.importantNotes?.description ?? "Persistent notes distilled from per-answer user feedback."}</div>
           <pre class="metaclaw-notes">${state.importantNotes?.content ?? "No important notes yet."}</pre>
         </div>
       </div>
