@@ -86,6 +86,34 @@ function nodeBuildConfig(config: UserConfig): UserConfig {
 const bundledPluginBuildEntries = listBundledPluginBuildEntries();
 const bundledPluginRuntimeDependencies = listBundledPluginRuntimeDependencies();
 
+function buildStableLazyRuntimeEntries(): Record<string, string> {
+  return {
+    // Reply handling stays hot inside long-lived gateway processes. Keep the
+    // lazy runtime boundaries on stable filenames so a dist rebuild does not
+    // strand an already-running gateway on stale hashed chunks mid-conversation.
+    "agents/model-catalog.runtime": "src/agents/model-catalog.runtime.ts",
+    "agents/openclaw-tools.runtime": "src/agents/openclaw-tools.runtime.ts",
+    "agents/pi-embedded.runtime": "src/agents/pi-embedded.runtime.ts",
+    "auto-reply/commands-registry.runtime": "src/auto-reply/commands-registry.runtime.ts",
+    "auto-reply/reply.runtime": "src/auto-reply/reply.runtime.ts",
+    "auto-reply/skill-commands.runtime": "src/auto-reply/skill-commands.runtime.ts",
+    "auto-reply/reply/agent-runner.runtime": "src/auto-reply/reply/agent-runner.runtime.ts",
+    "auto-reply/reply/commands-core.runtime": "src/auto-reply/reply/commands-core.runtime.ts",
+    "auto-reply/reply/get-reply-from-config.runtime":
+      "src/auto-reply/reply/get-reply-from-config.runtime.ts",
+    "auto-reply/reply/route-reply.runtime": "src/auto-reply/reply/route-reply.runtime.ts",
+    "auto-reply/reply/session-reset-model.runtime":
+      "src/auto-reply/reply/session-reset-model.runtime.ts",
+    "auto-reply/reply/session-updates.runtime":
+      "src/auto-reply/reply/session-updates.runtime.ts",
+    "auto-reply/reply/stage-sandbox-media.runtime":
+      "src/auto-reply/reply/stage-sandbox-media.runtime.ts",
+    "config/sessions/store.runtime": "src/config/sessions/store.runtime.ts",
+  };
+}
+
+const stableLazyRuntimeEntries = buildStableLazyRuntimeEntries();
+
 function buildBundledHookEntries(): Record<string, string> {
   const hooksRoot = path.join(process.cwd(), "src", "hooks", "bundled");
   const entries: Record<string, string> = {};
@@ -122,13 +150,12 @@ function buildCoreDistEntries(): Record<string, string> {
     entry: "src/entry.ts",
     // Ensure this module is bundled as an entry so legacy CLI shims can resolve its exports.
     "cli/daemon-cli": "src/cli/daemon-cli.ts",
-    // Keep long-lived lazy runtime boundaries on stable filenames so rebuilt
-    // dist/ trees do not strand already-running gateways on stale hashed chunks.
     "agents/auth-profiles.runtime": "src/agents/auth-profiles.runtime.ts",
     "agents/pi-model-discovery-runtime": "src/agents/pi-model-discovery-runtime.ts",
     "commands/status.summary.runtime": "src/commands/status.summary.runtime.ts",
     "plugins/provider-runtime.runtime": "src/plugins/provider-runtime.runtime.ts",
     "plugins/runtime/runtime-line.contract": "src/plugins/runtime/runtime-line.contract.ts",
+    ...stableLazyRuntimeEntries,
     extensionAPI: "src/extensionAPI.ts",
     "infra/warning-filter": "src/infra/warning-filter.ts",
     "telegram/audit": bundledPluginFile("telegram", "src/audit.ts"),

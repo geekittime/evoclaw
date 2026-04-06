@@ -17,6 +17,7 @@ import {
   renderStreamingGroup,
 } from "../chat/grouped-render.ts";
 import { InputHistory } from "../chat/input-history.ts";
+import { extractText } from "../chat/message-extract.ts";
 import { normalizeMessage, normalizeRoleForGrouping } from "../chat/message-normalizer.ts";
 import { PinnedMessages } from "../chat/pinned-messages.ts";
 import { getPinnedMessageSummary } from "../chat/pinned-summary.ts";
@@ -624,6 +625,31 @@ function tokenEstimate(draft: string): string | null {
   return `~${Math.ceil(draft.length / 4)} tokens`;
 }
 
+function extractGroupText(group: MessageGroup): string {
+  const parts: string[] = [];
+  for (const entry of group.messages) {
+    const text = extractText(entry.message);
+    if (text?.trim()) {
+      parts.push(text.trim());
+    }
+  }
+  return parts.join("\n\n").trim();
+}
+
+function findPreviousUserInstruction(chatItems: ChatItem[], currentIndex: number): string {
+  for (let index = currentIndex - 1; index >= 0; index -= 1) {
+    const candidate = chatItems[index];
+    if (candidate?.kind !== "group") {
+      continue;
+    }
+    if (normalizeRoleForGrouping(candidate.role) !== "user") {
+      continue;
+    }
+    return extractGroupText(candidate);
+  }
+  return "";
+}
+
 /**
  * Export chat markdown - delegates to shared utility.
  */
@@ -999,7 +1025,7 @@ export function renderChat(props: ChatProps) {
         ${repeat(
           chatItems,
           (item) => item.key,
-          (item) => {
+          (item, index) => {
             if (item.kind === "divider") {
               return html`
                 <div class="chat-divider" role="separator" data-ts=${String(item.timestamp)}>
@@ -1039,8 +1065,13 @@ export function renderChat(props: ChatProps) {
                   requestUpdate();
                 },
               });
+              const instructionText =
+                normalizeRoleForGrouping(item.role) === "assistant"
+                  ? findPreviousUserInstruction(chatItems, index)
+                  : "";
               return html`${groupView}${renderAssistantFeedback(
                 item,
+                instructionText,
                 props.metaclaw,
                 metaclawVs,
                 requestUpdate,

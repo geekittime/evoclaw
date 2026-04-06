@@ -1315,12 +1315,14 @@ class MetaClawAPIServer:
                 raise HTTPException(status_code=400, detail="rating must be 'good' or 'bad'")
             feedback_text = str(body.get("feedback", "") or "").strip()
             response_text = str(body.get("response_text", "") or "").strip()
+            instruction_text = str(body.get("instruction_text", "") or "").strip()
             result = await owner._handle_feedback(
                 session_id=session_id,
                 turn=turn,
                 rating=rating,
                 feedback_text=feedback_text,
                 response_text=response_text,
+                instruction_text=instruction_text,
             )
             return JSONResponse(content=result)
 
@@ -1910,6 +1912,47 @@ class MetaClawAPIServer:
         except OSError:
             return None
         return latest_match
+
+    def _build_fallback_feedback_record(
+        self,
+        session_id: str,
+        turn: int | None,
+        response_text: str = "",
+        instruction_text: str = "",
+    ) -> dict[str, Any] | None:
+        normalized_response = self._normalize_feedback_response_text(response_text)
+        normalized_instruction = self._normalize_feedback_response_text(instruction_text)
+        if not normalized_response and not normalized_instruction:
+            return None
+
+        turn_num = int(turn) if turn not in (None, "", False) else 0
+        if turn_num <= 0:
+            turn_num = len(self._feedback_by_session.get(session_id, [])) + 1
+
+        messages: list[dict[str, Any]] = []
+        if normalized_instruction:
+            messages.append({"role": "user", "content": instruction_text.strip()})
+        if normalized_response:
+            messages.append({"role": "assistant", "content": response_text.strip()})
+
+        brief_key = self._task_brief_key(session_id, self._session_memory_scopes.get(session_id, ""))
+        task_brief = self._task_briefs.get(brief_key, {})
+        return {
+            "schema": "metaclaw.feedback_record_fallback.v1",
+            "source": "metaclaw-feedback-fallback",
+            "session_id": session_id,
+            "turn": turn_num,
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "messages": messages,
+            "instruction_text": instruction_text.strip(),
+            "prompt_text": instruction_text.strip(),
+            "response_text": response_text.strip(),
+            "tool_calls": None,
+            "context_summary": "",
+            "context_summary_used": False,
+            "injected_skills": list(self._latest_injected_skills.get(session_id, [])),
+            "task_brief": task_brief,
+        }
 
     def _build_feedback_ack_response(
         self,
@@ -3471,8 +3514,16 @@ class MetaClawAPIServer:
         rating: str,
         feedback_text: str,
         response_text: str = "",
+        instruction_text: str = "",
     ) -> dict[str, Any]:
         record = self._load_record_for_feedback(session_id, turn, response_text=response_text)
+        if record is None:
+            record = self._build_fallback_feedback_record(
+                session_id,
+                turn,
+                response_text=response_text,
+                instruction_text=instruction_text,
+            )
         if record is None:
             raise HTTPException(status_code=404, detail="target turn record not found")
 
@@ -3484,6 +3535,7 @@ class MetaClawAPIServer:
             "rating": rating,
             "feedback": feedback_text,
             "instruction_text": record.get("instruction_text", ""),
+            "response_text": record.get("response_text", ""),
             "injected_skills": record.get("injected_skills", []),
         }
         self._feedback_by_session.setdefault(session_id, []).append(feedback_record)

@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createInitialMetaclawSectionsState,
   loadMetaclawState,
+  submitMetaclawFeedback,
   type MetaclawState,
 } from "./metaclaw.ts";
 
@@ -106,6 +107,46 @@ describe("loadMetaclawState", () => {
     expect(state.metaclawConnected).toBe(false);
     expect(state.metaclawError).toContain("Unable to reach MetaClaw via gateway proxy");
     expect(state.metaclawSections.skills.status).toBe("error");
+
+    vi.unstubAllGlobals();
+  });
+
+  it("includes instruction text when submitting answer feedback", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+      expect(body).toMatchObject({
+        session_id: "agent:main:main",
+        turn: 7,
+        rating: "bad",
+        feedback: "Needs to greet first.",
+        response_text: "What would you like to work on today?",
+        instruction_text: "hi",
+      });
+      return jsonResponse({
+        ok: true,
+        session_id: "agent:main:main",
+        turn: 7,
+        rating: "bad",
+        skill_updated: true,
+        skill_name: "important-notes",
+        skill_description: "notes",
+        skill_content: "Remember to greet first.",
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+
+    const state = createState();
+    const result = await submitMetaclawFeedback(
+      state,
+      7,
+      "bad",
+      "Needs to greet first.",
+      "What would you like to work on today?",
+      "hi",
+    );
+
+    expect(result.ok).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
 
     vi.unstubAllGlobals();
   });

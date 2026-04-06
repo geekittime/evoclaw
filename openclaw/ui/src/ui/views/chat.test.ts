@@ -943,6 +943,85 @@ describe("chat view", () => {
     expect(container.textContent).toContain("Bad");
   });
 
+  it("passes the previous user question into MetaClaw feedback submissions", async () => {
+    const onSubmitFeedback = vi.fn(async () => ({
+      ok: true,
+      session_id: "main",
+      turn: 1,
+      rating: "good",
+      skill_updated: true,
+      skill_name: "important-notes",
+      skill_description: "Persistent notes",
+      skill_content: "Remember the last user preference.",
+    }));
+    const container = document.createElement("div");
+    cleanupChatModuleState();
+    try {
+      const props = createProps({
+        metaclaw: createMetaclawProps({
+          onSubmitFeedback,
+        }),
+        messages: [
+          {
+            role: "user",
+            content: "hi",
+            timestamp: 1000,
+          },
+          {
+            role: "assistant",
+            content: "What would you like to work on today?",
+            timestamp: 1001,
+          },
+        ],
+      });
+
+      const rerender = () => {
+        render(
+          renderChat({
+            ...props,
+            onRequestUpdate: rerender,
+          }),
+          container,
+        );
+      };
+
+      rerender();
+
+      const goodButton = Array.from(container.querySelectorAll("button")).find((button) =>
+        button.textContent?.includes("Good"),
+      );
+      expect(goodButton).toBeTruthy();
+      goodButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flushTasks();
+
+      const textarea = container.querySelector("textarea");
+      expect(textarea).toBeTruthy();
+      textarea?.dispatchEvent(new InputEvent("input", { bubbles: true }));
+      if (textarea instanceof HTMLTextAreaElement) {
+        textarea.value = "Start with hi.";
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      await flushTasks();
+
+      const saveButton = Array.from(container.querySelectorAll("button")).find((button) =>
+        button.textContent?.includes("Save Feedback"),
+      );
+      expect(saveButton).toBeTruthy();
+      saveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flushTasks();
+
+      expect(onSubmitFeedback).toHaveBeenCalledWith(
+        null,
+        "good",
+        "Start with hi.",
+        "What would you like to work on today?",
+        "hi",
+      );
+    } finally {
+      cleanupChatModuleState();
+    }
+  });
+
   it("shows zero selected skills by default when no session selection exists", async () => {
     const container = document.createElement("div");
     cleanupChatModuleState();

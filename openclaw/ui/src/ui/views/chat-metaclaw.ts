@@ -60,6 +60,7 @@ export type ChatMetaclawProps = {
     rating: "good" | "bad",
     feedback: string,
     responseText: string,
+    instructionText: string,
   ) => Promise<MetaclawFeedbackResponse>;
 };
 
@@ -884,6 +885,7 @@ function openFeedbackComposer(
 
 export function renderAssistantFeedback(
   group: MessageGroup,
+  instructionText: string,
   props: ChatMetaclawProps | undefined,
   viewState: ChatMetaclawViewState,
   requestUpdate: () => void,
@@ -965,6 +967,7 @@ export function renderAssistantFeedback(
                         viewState.feedbackRating,
                         viewState.feedbackText.trim(),
                         responseText,
+                        instructionText,
                       );
                       viewState.feedbackText = "";
                       viewState.feedbackMessage = result.skill_updated
