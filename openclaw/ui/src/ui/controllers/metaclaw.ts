@@ -46,6 +46,17 @@ export type MetaclawSandboxPolicy = {
   path_blocklist: string[];
 };
 
+export type MetaclawFeedbackResponse = {
+  ok: boolean;
+  session_id: string;
+  turn: number;
+  rating: "good" | "bad";
+  skill_updated: boolean;
+  skill_name: string;
+  skill_description: string;
+  skill_content: string;
+};
+
 export type MetaclawState = {
   sessionKey: string;
   metaclawApiBase: string;
@@ -186,7 +197,7 @@ export async function submitMetaclawFeedback(
   rating: "good" | "bad",
   feedback: string,
 ) {
-  return metaclawRequest<Record<string, unknown>>(state, "/v1/feedback", {
+  return metaclawRequest<MetaclawFeedbackResponse>(state, "/v1/feedback", {
     method: "POST",
     body: JSON.stringify({
       session_id: state.sessionKey,

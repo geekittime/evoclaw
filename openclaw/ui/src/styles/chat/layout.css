@@ -529,6 +529,42 @@
   margin-top: 4px;
 }
 
+.metaclaw-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.metaclaw-summary__card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--accent) 16%, var(--border));
+  background: color-mix(in srgb, var(--card) 88%, transparent);
+}
+
+.metaclaw-summary__card strong {
+  font-size: 1rem;
+  color: var(--text);
+}
+
+.metaclaw-summary__card span {
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
+.metaclaw-summary__card.is-ok {
+  border-color: color-mix(in srgb, var(--ok) 32%, var(--border));
+}
+
+.metaclaw-summary__card.is-warn {
+  border-color: color-mix(in srgb, var(--warn) 32%, var(--border));
+}
+
 .metaclaw-studio__grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -593,6 +629,14 @@
 .metaclaw-skill {
   align-items: center;
   justify-content: space-between;
+}
+
+.metaclaw-rule-row__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .metaclaw-skill {
@@ -662,6 +706,10 @@
 }
 
 @media (max-width: 980px) {
+  .metaclaw-summary {
+    grid-template-columns: 1fr;
+  }
+
   .metaclaw-studio__grid {
     grid-template-columns: 1fr;
   }

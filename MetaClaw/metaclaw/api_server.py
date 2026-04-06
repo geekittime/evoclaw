@@ -2437,11 +2437,7 @@ class MetaClawAPIServer:
                 rating=rating,
                 feedback_text=feedback_text,
             )
-            ack = (
-                "Feedback recorded."
-                if rating == "good"
-                else "Negative feedback recorded; appended a lesson to important-notes."
-            )
+            ack = "Feedback recorded and summarized into important-notes."
             return self._build_feedback_ack_response(
                 session_id=session_id,
                 message=ack,
@@ -3392,8 +3388,6 @@ class MetaClawAPIServer:
         if not self.skill_manager:
             raise HTTPException(status_code=503, detail="skills are not enabled")
         existing_skill = self._get_important_skill() or self._build_default_important_skill()
-        if rating != "bad":
-            return existing_skill
         prompt_sections = [
             f"Feedback rating: {rating}",
             f"User feedback:\n{feedback_text or '(no free-form feedback provided)'}",
@@ -3466,33 +3460,24 @@ class MetaClawAPIServer:
         if self.skill_manager:
             self.skill_manager.record_feedback(record.get("injected_skills", []) or [], rating)
 
-        updated_skill = None
-        if rating == "bad":
-            updated_skill = await self._update_important_skill_from_feedback(
-                record=record,
-                rating=rating,
-                feedback_text=feedback_text,
-            )
-            logger.info(
-                "[Feedback] session=%s turn=%d rating=%s -> appended lesson to skill=%s",
-                session_id,
-                turn_num,
-                rating,
-                updated_skill.get("name", ""),
-            )
-        else:
-            logger.info(
-                "[Feedback] session=%s turn=%d rating=%s -> recorded only",
-                session_id,
-                turn_num,
-                rating,
-            )
+        updated_skill = await self._update_important_skill_from_feedback(
+            record=record,
+            rating=rating,
+            feedback_text=feedback_text,
+        )
+        logger.info(
+            "[Feedback] session=%s turn=%d rating=%s -> appended lesson to skill=%s",
+            session_id,
+            turn_num,
+            rating,
+            updated_skill.get("name", ""),
+        )
         return {
             "ok": True,
             "session_id": session_id,
             "turn": turn_num,
             "rating": rating,
-            "skill_updated": rating == "bad",
+            "skill_updated": True,
             "skill_name": updated_skill.get("name", "") if updated_skill else "",
             "skill_description": updated_skill.get("description", "") if updated_skill else "",
             "skill_content": updated_skill.get("content", "") if updated_skill else "",

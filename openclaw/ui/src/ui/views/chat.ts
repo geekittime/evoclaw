@@ -35,6 +35,7 @@ import { detectTextDirection } from "../text-direction.ts";
 import type { GatewaySessionRow, SessionsListResult } from "../types.ts";
 import type { ChatItem, MessageGroup } from "../types/chat-types.ts";
 import type { ChatAttachment, ChatQueueItem } from "../ui-types.ts";
+import type { MetaclawFeedbackResponse } from "../controllers/metaclaw.ts";
 import { agentLogoUrl, resolveAgentAvatarUrl } from "./agents-utils.ts";
 import { renderMarkdownSidebar } from "./markdown-sidebar.ts";
 import "../components/resizable-divider.ts";
@@ -140,7 +141,7 @@ export type ChatProps = {
       turn: number | null,
       rating: "good" | "bad",
       feedback: string,
-    ) => Promise<void>;
+    ) => Promise<MetaclawFeedbackResponse>;
   };
 };
 
@@ -190,6 +191,7 @@ interface ChatEphemeralState {
   feedbackSaving: boolean;
   feedbackMessage: string;
   metaclawRuleCommand: string;
+  metaclawRuleMode: "allow" | "ask" | "deny";
   metaclawWhitelistCommand: string;
   metaclawWhitelistPath: string;
   metaclawBlockedPath: string;
@@ -214,6 +216,7 @@ function createChatEphemeralState(): ChatEphemeralState {
     feedbackSaving: false,
     feedbackMessage: "",
     metaclawRuleCommand: "",
+    metaclawRuleMode: "ask",
     metaclawWhitelistCommand: "",
     metaclawWhitelistPath: "",
     metaclawBlockedPath: "",
@@ -747,7 +750,13 @@ function renderMetaclawStudio(props: ChatProps, requestUpdate: () => void): Temp
   }
   const policy = state.sandboxPolicy;
   const commandRules = policy ? Object.entries(policy.command_rules) : [];
-  const selected = new Set(state.selectedSkillNames);
+  const selected = new Set(
+    state.selectionCustomized ? state.selectedSkillNames : state.skills.map((skill) => skill.name),
+  );
+  const pendingCount = state.pendingApprovals.length;
+  const allowCount = commandRules.filter(([, mode]) => mode === "allow").length;
+  const askCount = commandRules.filter(([, mode]) => mode === "ask").length;
+  const denyCount = commandRules.filter(([, mode]) => mode === "deny").length;
   return html`
     <section class="metaclaw-studio">
       <div class="metaclaw-studio__hero">
@@ -758,6 +767,20 @@ function renderMetaclawStudio(props: ChatProps, requestUpdate: () => void): Temp
         <button class="btn btn--ghost" type="button" ?disabled=${state.loading || state.saving} @click=${state.onRefresh}>
           ${icons.refresh} Refresh
         </button>
+      </div>
+      <div class="metaclaw-summary">
+        <div class="metaclaw-summary__card ${state.connected ? "is-ok" : "is-warn"}">
+          <strong>${state.connected ? "API online" : "API offline"}</strong>
+          <span>${state.connected ? "MetaClaw frontend features are live." : "Check the API URL, token, or CORS reachability."}</span>
+        </div>
+        <div class="metaclaw-summary__card ${pendingCount ? "is-warn" : "is-ok"}">
+          <strong>${pendingCount}</strong>
+          <span>${pendingCount ? "Command requests are waiting for your decision." : "No commands are waiting for approval."}</span>
+        </div>
+        <div class="metaclaw-summary__card">
+          <strong>${state.selectionCustomized ? state.selectedSkillNames.length : state.skills.length}/${state.skills.length}</strong>
+          <span>${state.selectionCustomized ? "Skills explicitly selected for this session." : "All available skills are active by default."}</span>
+        </div>
       </div>
       <div class="metaclaw-studio__grid">
         <div class="metaclaw-panel">
@@ -810,40 +833,71 @@ function renderMetaclawStudio(props: ChatProps, requestUpdate: () => void): Temp
                     <option value="deny">Deny</option>
                   </select>
                 </label>
+                <div class="metaclaw-chip-group">
+                  <span class="chip">${allowCount} allow</span>
+                  <span class="chip">${askCount} ask</span>
+                  <span class="chip chip--danger">${denyCount} deny</span>
+                </div>
                 <div class="metaclaw-rule-list">
                   ${commandRules.map(([command, mode]) => html`
                     <div class="metaclaw-rule-row">
                       <span class="mono">${command}</span>
-                      <select
-                        .value=${mode}
-                        @change=${(e: Event) => {
-                          const nextMode = (e.target as HTMLSelectElement).value as "allow" | "ask" | "deny";
-                          state.onSavePolicy({ ...policy, command_rules: { ...policy.command_rules, [command]: nextMode } });
-                        }}
-                      >
-                        <option value="allow">Allow</option>
-                        <option value="ask">Ask</option>
-                        <option value="deny">Deny</option>
-                      </select>
+                      <div class="metaclaw-rule-row__actions">
+                        <select
+                          .value=${mode}
+                          @change=${(e: Event) => {
+                            const nextMode = (e.target as HTMLSelectElement).value as "allow" | "ask" | "deny";
+                            state.onSavePolicy({ ...policy, command_rules: { ...policy.command_rules, [command]: nextMode } });
+                          }}
+                        >
+                          <option value="allow">Allow</option>
+                          <option value="ask">Ask</option>
+                          <option value="deny">Deny</option>
+                        </select>
+                        <button
+                          class="btn btn--ghost"
+                          type="button"
+                          ?disabled=${state.saving}
+                          @click=${() => {
+                            const nextRules = { ...policy.command_rules };
+                            delete nextRules[command];
+                            state.onSavePolicy({ ...policy, command_rules: nextRules });
+                          }}
+                        >
+                          Remove
+                        </button>
+                      </div>
                     </div>
                   `)}
                 </div>
                 <div class="metaclaw-inline-form">
                   <input class="input" .value=${vs.metaclawRuleCommand} @input=${(e: Event) => { vs.metaclawRuleCommand = (e.target as HTMLInputElement).value; requestUpdate(); }} placeholder="Add command rule, e.g. pwd" />
+                  <select
+                    .value=${vs.metaclawRuleMode}
+                    @change=${(e: Event) => {
+                      vs.metaclawRuleMode = (e.target as HTMLSelectElement).value as "allow" | "ask" | "deny";
+                      requestUpdate();
+                    }}
+                  >
+                    <option value="allow">Allow</option>
+                    <option value="ask">Ask</option>
+                    <option value="deny">Deny</option>
+                  </select>
                   <button class="btn" type="button" ?disabled=${!vs.metaclawRuleCommand.trim() || state.saving} @click=${() => {
                     const command = vs.metaclawRuleCommand.trim();
                     vs.metaclawRuleCommand = "";
                     requestUpdate();
-                    state.onSavePolicy({ ...policy, command_rules: { ...policy.command_rules, [command]: "ask" } });
-                  }}>Add Ask Rule</button>
+                    state.onSavePolicy({ ...policy, command_rules: { ...policy.command_rules, [command]: vs.metaclawRuleMode } });
+                  }}>Save Rule</button>
                 </div>
               `
             : html`<div class="muted">Sandbox policy unavailable.</div>`}
         </div>
         <div class="metaclaw-panel">
-          <div class="metaclaw-panel__title">Allow / Block Paths</div>
+          <div class="metaclaw-panel__title">Path Access</div>
           ${policy
             ? html`
+                <div class="metaclaw-panel__sub">Allowlisted paths stay accessible even when the default path policy is restrictive.</div>
                 <div class="metaclaw-chip-group">
                   ${policy.path_allowlist.map((path) => html`<button class="chip" type="button" @click=${() => state.onRemoveWhitelistEntry("path", path)}>${path} ${icons.x}</button>`)}
                 </div>
@@ -877,6 +931,14 @@ function renderMetaclawStudio(props: ChatProps, requestUpdate: () => void): Temp
                     state.onSavePolicy({ ...policy, path_blocklist: [...policy.path_blocklist, value] });
                   }}>Block</button>
                 </div>
+              `
+            : nothing}
+        </div>
+        <div class="metaclaw-panel">
+          <div class="metaclaw-panel__title">Command Allowlist</div>
+          <div class="metaclaw-panel__sub">Use this for commands that should bypass the default ask/deny flow.</div>
+          ${policy
+            ? html`
                 <div class="metaclaw-chip-group">
                   ${policy.command_allowlist.map((command) => html`<button class="chip" type="button" @click=${() => state.onRemoveWhitelistEntry("command", command)}>${command} ${icons.x}</button>`)}
                 </div>
@@ -974,6 +1036,7 @@ function renderAssistantFeedback(
         <button class="btn ${isOpen && vs.feedbackRating === "good" ? "primary" : ""}" type="button" @click=${() => {
           vs.feedbackTargetTurn = turn;
           vs.feedbackRating = "good";
+          vs.feedbackText = "";
           vs.feedbackMessage = "";
           requestUpdate();
         }}>
@@ -982,6 +1045,7 @@ function renderAssistantFeedback(
         <button class="btn ${isOpen && vs.feedbackRating === "bad" ? "danger" : ""}" type="button" @click=${() => {
           vs.feedbackTargetTurn = turn;
           vs.feedbackRating = "bad";
+          vs.feedbackText = "";
           vs.feedbackMessage = "";
           requestUpdate();
         }}>
@@ -1005,8 +1069,10 @@ function renderAssistantFeedback(
                 vs.feedbackMessage = "";
                 requestUpdate();
                 try {
-                  await props.metaclaw!.onSubmitFeedback(turn, vs.feedbackRating, vs.feedbackText.trim());
-                  vs.feedbackMessage = vs.feedbackRating === "bad" ? "Lesson appended to important-notes." : "Feedback recorded.";
+                  const result = await props.metaclaw!.onSubmitFeedback(turn, vs.feedbackRating, vs.feedbackText.trim());
+                  vs.feedbackMessage = result.skill_updated
+                    ? `Summarized into ${result.skill_name || "important-notes"}.`
+                    : "Feedback recorded.";
                   vs.feedbackText = "";
                 } finally {
                   vs.feedbackSaving = false;
