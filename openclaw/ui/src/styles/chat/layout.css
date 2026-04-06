@@ -429,6 +429,15 @@
   gap: 4px;
 }
 
+.agent-chat__toolbar-action {
+  width: auto;
+  min-width: 0;
+  padding: 0 10px;
+  gap: 8px;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
 .agent-chat__input-btn,
 .agent-chat__toolbar .btn--ghost {
   display: inline-flex;
@@ -467,6 +476,12 @@
 .agent-chat__toolbar .btn--ghost:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+.agent-chat__toolbar .agent-chat__toolbar-action {
+  width: auto;
+  height: 30px;
+  justify-content: flex-start;
 }
 
 .agent-chat__input-btn--active {

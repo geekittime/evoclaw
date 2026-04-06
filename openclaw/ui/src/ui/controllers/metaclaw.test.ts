@@ -2,6 +2,7 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  compactMetaclawConversationHistory,
   createInitialMetaclawSectionsState,
   loadMetaclawState,
   resolveMetaclawApproval,
@@ -23,6 +24,7 @@ function createState(): MetaclawState {
     metaclawSelectionCustomized: false,
     metaclawLatestInjectedSkills: [],
     metaclawImportantNotes: null,
+    metaclawContextSummary: null,
     metaclawPendingApprovals: [],
     metaclawSandboxPolicy: null,
     metaclawSections: createInitialMetaclawSectionsState(),
@@ -112,6 +114,65 @@ describe("loadMetaclawState", () => {
     vi.unstubAllGlobals();
   });
 
+  it("keeps only the latest pending approval in UI state", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/openclaw/__openclaw/metaclaw/v1/skills?session_id=agent%3Amain%3Amain")) {
+        return jsonResponse({
+          skills: [],
+          selection_customized: true,
+          selected_skill_names: [],
+          latest_injected_skills: [],
+          important_notes: null,
+        });
+      }
+      if (
+        url.endsWith(
+          "/openclaw/__openclaw/metaclaw/v1/sandbox/pending?session_id=agent%3Amain%3Amain",
+        )
+      ) {
+        return jsonResponse({
+          pending: [
+            {
+              approval_id: "appr_old",
+              session_id: "agent:main:main",
+              status: "pending",
+              created_at: "2026-04-06 18:00:00",
+              updated_at: "2026-04-06 18:00:00",
+            },
+            {
+              approval_id: "appr_new",
+              session_id: "agent:main:main",
+              status: "pending",
+              created_at: "2026-04-06 18:01:00",
+              updated_at: "2026-04-06 18:01:00",
+            },
+          ],
+        });
+      }
+      if (url.endsWith("/openclaw/__openclaw/metaclaw/v1/sandbox/whitelist")) {
+        return jsonResponse({
+          command_allowlist: [],
+          path_allowlist: [],
+          command_rules: {},
+          default_command_mode: "ask",
+          path_blocklist: [],
+        });
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+
+    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+
+    const state = createState();
+    await loadMetaclawState(state);
+
+    expect(state.metaclawPendingApprovals).toHaveLength(1);
+    expect(state.metaclawPendingApprovals[0]?.approval_id).toBe("appr_new");
+
+    vi.unstubAllGlobals();
+  });
+
   it("includes instruction text when submitting answer feedback", async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
@@ -148,6 +209,68 @@ describe("loadMetaclawState", () => {
 
     expect(result.ok).toBe(true);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    vi.unstubAllGlobals();
+  });
+
+  it("compacts visible chat history into the session context summary", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/openclaw/__openclaw/metaclaw/v1/context-summary/compact")) {
+        const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+        expect(body).toMatchObject({
+          session_id: "agent:main:main",
+        });
+        expect(Array.isArray(body.messages)).toBe(true);
+        return jsonResponse({
+          ok: true,
+          session_id: "agent:main:main",
+          summary: "Compressed summary text.",
+          has_summary: true,
+        });
+      }
+      if (url.endsWith("/openclaw/__openclaw/metaclaw/v1/skills?session_id=agent%3Amain%3Amain")) {
+        return jsonResponse({
+          skills: [],
+          selection_customized: true,
+          selected_skill_names: [],
+          latest_injected_skills: [],
+          important_notes: null,
+          context_summary: {
+            session_id: "agent:main:main",
+            content: "Compressed summary text.",
+            has_summary: true,
+          },
+        });
+      }
+      if (
+        url.endsWith(
+          "/openclaw/__openclaw/metaclaw/v1/sandbox/pending?session_id=agent%3Amain%3Amain",
+        )
+      ) {
+        return jsonResponse({ pending: [] });
+      }
+      if (url.endsWith("/openclaw/__openclaw/metaclaw/v1/sandbox/whitelist")) {
+        return jsonResponse({
+          command_allowlist: [],
+          path_allowlist: [],
+          command_rules: {},
+          default_command_mode: "ask",
+          path_blocklist: [],
+        });
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+
+    const state = createState();
+    const result = await compactMetaclawConversationHistory(state, [
+      { role: "user", content: "Please summarize this discussion." },
+      { role: "assistant", content: "Here is the latest result." },
+    ]);
+
+    expect(result.summary).toBe("Compressed summary text.");
+    expect(state.metaclawContextSummary?.content).toBe("Compressed summary text.");
 
     vi.unstubAllGlobals();
   });

@@ -1,7 +1,11 @@
 from openai import OpenAI
 from typing import Any
+import json
+import logging
 import os
 import subprocess
+
+logger = logging.getLogger(__name__)
 
 _COMPRESSION_INSTRUCTION = (
     "You are compressing an OpenClaw system prompt. "
@@ -66,6 +70,31 @@ _SESSION_REPORT_INSTRUCTION = (
 )
 
 
+def _serialize_messages_for_log(messages: Any) -> str:
+    try:
+        return json.dumps(messages, ensure_ascii=False, indent=2, default=str)
+    except Exception:
+        return str(messages)
+
+
+def log_llm_prompt(
+    label: str,
+    messages: Any,
+    *,
+    model_id: str = "",
+    base_url: str = "",
+):
+    model_part = f" model={model_id}" if model_id else ""
+    base_part = f" base={base_url}" if base_url else ""
+    logger.info(
+        "[LLM PROMPT] %s%s%s\n%s",
+        label,
+        model_part,
+        base_part,
+        _serialize_messages_for_log(messages),
+    )
+
+
 def _get_llm_provider() -> str:
     """Detect whether to use Bedrock or OpenAI based on config/env."""
     try:
@@ -98,6 +127,7 @@ def _run_llm_bedrock(messages):
     client = BedrockChatClient(model_id=model_id, region=region)
 
     rewrite_messages = [{"role": "system", "content": _COMPRESSION_INSTRUCTION}, *messages]
+    log_llm_prompt("compression", rewrite_messages, model_id=model_id, base_url=f"bedrock://{region}")
     response = client.chat.completions.create(
         model=model_id,
         messages=rewrite_messages,
@@ -148,6 +178,7 @@ def _run_llm_openai(messages):
         base_url=base_url,
         model_id=model_id,
         max_completion_tokens=2500,
+        label="compression",
     )
     return response
 
@@ -169,6 +200,7 @@ def run_context_summary_llm(
         base_url=client_base_url,
         model_id=client_model_id,
         max_completion_tokens=max_completion_tokens,
+        label="context-summary",
     )
 
 
@@ -189,6 +221,7 @@ def run_feedback_skill_llm(
         base_url=client_base_url,
         model_id=client_model_id,
         max_completion_tokens=max_completion_tokens,
+        label="feedback-skill",
     )
 
 
@@ -209,6 +242,7 @@ def run_task_brief_llm(
         base_url=client_base_url,
         model_id=client_model_id,
         max_completion_tokens=max_completion_tokens,
+        label="task-brief",
     )
 
 
@@ -229,6 +263,7 @@ def run_session_report_llm(
         base_url=client_base_url,
         model_id=client_model_id,
         max_completion_tokens=max_completion_tokens,
+        label="session-report",
     )
 
 
@@ -238,7 +273,10 @@ def _run_openai_chat_completion(
     base_url: str,
     model_id: str,
     max_completion_tokens: int,
+    *,
+    label: str = "openai-chat",
 ):
+    log_llm_prompt(label, messages, model_id=model_id, base_url=base_url)
     client_kwargs: dict[str, Any] = {"api_key": api_key}
     client_kwargs["base_url"] = base_url
     client = OpenAI(**client_kwargs)

@@ -5,6 +5,7 @@ import type { DevicePairingList } from "./controllers/devices.ts";
 import type { ExecApprovalRequest } from "./controllers/exec-approval.ts";
 import type { ExecApprovalsFile, ExecApprovalsSnapshot } from "./controllers/exec-approvals.ts";
 import type {
+  MetaclawContextSummary,
   MetaclawImportantNotes,
   MetaclawPendingApproval,
   MetaclawSectionsState,
@@ -111,6 +112,7 @@ export type AppViewState = {
   metaclawToken: string;
   metaclawLoading: boolean;
   metaclawSaving: boolean;
+  metaclawCompactingHistory: boolean;
   metaclawError: string | null;
   metaclawConnected: boolean;
   metaclawSkills: MetaclawSkillEntry[];
@@ -118,6 +120,7 @@ export type AppViewState = {
   metaclawSelectionCustomized: boolean;
   metaclawLatestInjectedSkills: string[];
   metaclawImportantNotes: MetaclawImportantNotes | null;
+  metaclawContextSummary: MetaclawContextSummary | null;
   metaclawPendingApprovals: MetaclawPendingApproval[];
   metaclawSandboxPolicy: MetaclawSandboxPolicy | null;
   metaclawSections: MetaclawSectionsState;

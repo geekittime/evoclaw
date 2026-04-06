@@ -152,6 +152,7 @@ function createHost() {
     execApprovalQueue: [],
     execApprovalError: null,
     updateAvailable: null,
+    scheduleMetaclawRefresh: vi.fn(),
   } as unknown as Parameters<typeof connectGateway>[0];
 }
 
@@ -287,6 +288,26 @@ describe("connectGateway", () => {
     secondClient.emitEvent({ event: "presence", payload: { presence: [{ host: "active" }] } });
     expect(host.eventLogBuffer).toHaveLength(1);
     expect(host.eventLogBuffer[0]?.event).toBe("presence");
+  });
+
+  it("refreshes MetaClaw state after terminal chat events for the active session", () => {
+    const { host, client } = connectHostGateway();
+
+    client.emitEvent({
+      event: "chat",
+      payload: {
+        runId: "run-1",
+        sessionKey: "main",
+        state: "final",
+        message: {
+          role: "assistant",
+          content:
+            "这个工具在调用前需要获得你的允许。\nApproval ID: appr_demo\n使用 approve 进行批准，或使用 reject 进行拒绝。",
+        },
+      },
+    });
+
+    expect(host.scheduleMetaclawRefresh).toHaveBeenCalledWith(0);
   });
 
   it("applies update.available only from active client", () => {

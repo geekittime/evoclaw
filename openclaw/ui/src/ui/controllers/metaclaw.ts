@@ -18,12 +18,19 @@ export type MetaclawImportantNotes = {
   content: string;
 };
 
+export type MetaclawContextSummary = {
+  session_id: string;
+  content: string;
+  has_summary: boolean;
+};
+
 export type MetaclawSkillsPayload = {
   skills: MetaclawSkillEntry[];
   selection_customized: boolean;
   selected_skill_names: string[];
   latest_injected_skills: string[];
   important_notes: MetaclawImportantNotes;
+  context_summary?: MetaclawContextSummary | null;
 };
 
 export type MetaclawPendingApproval = {
@@ -60,6 +67,13 @@ export type MetaclawFeedbackResponse = {
   skill_content: string;
 };
 
+export type MetaclawContextSummaryResponse = {
+  ok: boolean;
+  session_id: string;
+  summary: string;
+  has_summary: boolean;
+};
+
 export type MetaclawSectionStatus = "idle" | "ready" | "unavailable" | "error";
 
 export type MetaclawSectionState = {
@@ -86,6 +100,7 @@ export type MetaclawState = {
   metaclawSelectionCustomized: boolean;
   metaclawLatestInjectedSkills: string[];
   metaclawImportantNotes: MetaclawImportantNotes | null;
+  metaclawContextSummary: MetaclawContextSummary | null;
   metaclawPendingApprovals: MetaclawPendingApproval[];
   metaclawSandboxPolicy: MetaclawSandboxPolicy | null;
   metaclawSections: MetaclawSectionsState;
@@ -233,6 +248,18 @@ function updateSkillsState(state: MetaclawState, payload: MetaclawSkillsPayload)
     ? payload.latest_injected_skills
     : [];
   state.metaclawImportantNotes = payload.important_notes ?? null;
+  state.metaclawContextSummary = payload.context_summary ?? null;
+}
+
+function retainLatestPendingApproval(
+  pending: MetaclawPendingApproval[],
+): MetaclawPendingApproval[] {
+  if (pending.length === 0) {
+    return [];
+  }
+  // The operator UI only surfaces the newest approval request so stale prompts
+  // do not keep resurfacing after a decision is made.
+  return [pending[pending.length - 1]!];
 }
 
 async function readMetaclawErrorMessage(response: Response): Promise<string> {
@@ -352,9 +379,9 @@ export async function loadMetaclawState(state: MetaclawState) {
     }
 
     if (pendingResult.status === "fulfilled") {
-      state.metaclawPendingApprovals = Array.isArray(pendingResult.value.pending)
-        ? pendingResult.value.pending
-        : [];
+      state.metaclawPendingApprovals = retainLatestPendingApproval(
+        Array.isArray(pendingResult.value.pending) ? pendingResult.value.pending : [],
+      );
       sections.pendingApprovals = createSectionState("ready");
       connected = true;
     } else {
@@ -398,6 +425,43 @@ export async function saveMetaclawSkillSelection(
     await loadMetaclawState(state);
   } catch (error) {
     applyMutationError(state, error);
+    throw toMetaclawRequestError(error);
+  } finally {
+    state.metaclawSaving = false;
+  }
+}
+
+export async function compactMetaclawConversationHistory(
+  state: MetaclawState,
+  messages: unknown[],
+) {
+  state.metaclawSaving = true;
+  state.metaclawError = null;
+  try {
+    const normalizedMessages = Array.isArray(messages)
+      ? messages.filter((message) => message && typeof message === "object")
+      : [];
+    const result = await metaclawRequest<MetaclawContextSummaryResponse>(
+      state,
+      "/v1/context-summary/compact",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          session_id: state.sessionKey,
+          messages: normalizedMessages,
+        }),
+      },
+    );
+    state.metaclawContextSummary = {
+      session_id: result.session_id,
+      content: result.summary,
+      has_summary: result.has_summary,
+    };
+    await loadMetaclawState(state);
+    return result;
+  } catch (error) {
+    applyMutationError(state, error);
+    throw error;
   } finally {
     state.metaclawSaving = false;
   }

@@ -1,7 +1,11 @@
 import { html, nothing, type TemplateResult } from "lit";
 import { extractText } from "../chat/message-extract.ts";
 import { normalizeRoleForGrouping } from "../chat/message-normalizer.ts";
-import type { MetaclawFeedbackResponse, MetaclawSectionState } from "../controllers/metaclaw.ts";
+import type {
+  MetaclawContextSummary,
+  MetaclawFeedbackResponse,
+  MetaclawSectionState,
+} from "../controllers/metaclaw.ts";
 import { icons } from "../icons.ts";
 import type { MessageGroup } from "../types/chat-types.ts";
 
@@ -10,6 +14,7 @@ export type ChatMetaclawProps = {
   token: string;
   loading: boolean;
   saving: boolean;
+  compactingHistory: boolean;
   connected: boolean;
   error: string | null;
   sections: {
@@ -40,9 +45,11 @@ export type ChatMetaclawProps = {
   selectionCustomized: boolean;
   latestInjectedSkills: string[];
   importantNotes: { name: string; description: string; content: string } | null;
+  contextSummary: MetaclawContextSummary | null;
   onApiBaseChange: (value: string) => void;
   onTokenChange: (value: string) => void;
   onRefresh: () => void;
+  onCompactHistory: () => Promise<void> | void;
   onApprove: (approvalId: string) => Promise<void> | void;
   onReject: (approvalId: string) => Promise<void> | void;
   onSavePolicy: (policy: {
@@ -217,12 +224,15 @@ export function parseMetaclawApprovalPromptCandidate(
     return null;
   }
 
-  const approvalMatch = normalized.match(METACLAW_APPROVAL_ID_RE);
-  if (!approvalMatch) {
+  const approvalMatches = [...normalized.matchAll(new RegExp(METACLAW_APPROVAL_ID_RE.source, "gi"))];
+  const approvalMatch = approvalMatches.at(-1);
+  if (!approvalMatch || approvalMatch.index == null) {
     return null;
   }
 
-  const lines = normalized
+  const approvalText = normalized.slice(approvalMatch.index).trim();
+
+  const lines = approvalText
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
@@ -233,7 +243,7 @@ export function parseMetaclawApprovalPromptCandidate(
 
   return {
     approvalId: approvalMatch[1],
-    rawText: normalized,
+    rawText: approvalText,
     detailText,
   };
 }
@@ -348,7 +358,13 @@ function renderPendingApprovalsPanel(props: ChatMetaclawProps): TemplateResult {
                           class="btn primary"
                           type="button"
                           ?disabled=${props.saving}
-                          @click=${() => props.onApprove(item.approval_id)}
+                          @click=${async () => {
+                            try {
+                              await props.onApprove(item.approval_id);
+                            } catch {
+                              requestUpdate();
+                            }
+                          }}
                         >
                           Approve
                         </button>
@@ -356,7 +372,13 @@ function renderPendingApprovalsPanel(props: ChatMetaclawProps): TemplateResult {
                           class="btn danger"
                           type="button"
                           ?disabled=${props.saving}
-                          @click=${() => props.onReject(item.approval_id)}
+                          @click=${async () => {
+                            try {
+                              await props.onReject(item.approval_id);
+                            } catch {
+                              requestUpdate();
+                            }
+                          }}
                         >
                           Reject
                         </button>
@@ -375,11 +397,15 @@ export function renderMetaclawPendingApprovalsInline(
   props: ChatMetaclawProps | undefined,
   viewState: ChatMetaclawViewState,
 ): TemplateResult | typeof nothing {
+  const visiblePendingApprovals = props?.pendingApprovals.filter(
+    (item) => !viewState.dismissedApprovalIds.includes(item.approval_id),
+  );
   if (
     !props ||
     viewState.studioExpanded ||
     props.sections.pendingApprovals.status !== "ready" ||
-    props.pendingApprovals.length === 0
+    !visiblePendingApprovals ||
+    visiblePendingApprovals.length === 0
   ) {
     return nothing;
   }
@@ -395,11 +421,11 @@ export function renderMetaclawPendingApprovalsInline(
           </div>
         </div>
         <span class="metaclaw-status-pill metaclaw-status-pill--warn">
-          ${props.pendingApprovals.length} waiting
+          ${visiblePendingApprovals.length} waiting
         </span>
       </div>
       <div class="metaclaw-approval-list">
-        ${props.pendingApprovals.map(
+        ${visiblePendingApprovals.map(
           (item) => html`
             <article class="metaclaw-approval">
               <div class="metaclaw-approval__head">
@@ -425,7 +451,17 @@ export function renderMetaclawPendingApprovalsInline(
                   class="btn primary"
                   type="button"
                   ?disabled=${props.saving}
-                  @click=${() => props.onApprove(item.approval_id)}
+                  @click=${async () => {
+                    try {
+                      await props.onApprove(item.approval_id);
+                      viewState.dismissedApprovalIds = appendUnique(
+                        viewState.dismissedApprovalIds,
+                        item.approval_id,
+                      );
+                    } catch {
+                      requestUpdate();
+                    }
+                  }}
                 >
                   Approve
                 </button>
@@ -433,7 +469,17 @@ export function renderMetaclawPendingApprovalsInline(
                   class="btn danger"
                   type="button"
                   ?disabled=${props.saving}
-                  @click=${() => props.onReject(item.approval_id)}
+                  @click=${async () => {
+                    try {
+                      await props.onReject(item.approval_id);
+                      viewState.dismissedApprovalIds = appendUnique(
+                        viewState.dismissedApprovalIds,
+                        item.approval_id,
+                      );
+                    } catch {
+                      requestUpdate();
+                    }
+                  }}
                 >
                   Reject
                 </button>
@@ -456,16 +502,18 @@ export function renderMetaclawPendingApprovalPrompt(
     return nothing;
   }
 
-  const activePendingApproval =
-    props.sections.pendingApprovals.status === "ready" && props.pendingApprovals.length > 0
-      ? props.pendingApprovals[props.pendingApprovals.length - 1]
-      : null;
-  const activeApprovalId = activePendingApproval?.approval_id ?? fallbackPrompt?.approvalId ?? null;
+  const activeApprovalId = fallbackPrompt?.approvalId ?? null;
   if (!activeApprovalId) {
     return nothing;
   }
+  const activePendingApproval =
+    props.sections.pendingApprovals.status === "ready"
+      ? props.pendingApprovals.find((item) => item.approval_id === activeApprovalId) ?? null
+      : null;
 
-  const queueCount = activePendingApproval ? props.pendingApprovals.length : 1;
+  const queueCount = activePendingApproval
+    ? props.pendingApprovals.filter((item) => item.approval_id !== activeApprovalId).length + 1
+    : 1;
   const isSubmitting = viewState.approvalPromptSubmittingId === activeApprovalId;
   const promptMessage =
     viewState.approvalPromptMessageId === activeApprovalId ? viewState.approvalPromptMessage : "";
@@ -992,6 +1040,28 @@ ${props.importantNotes?.content ?? "No important notes yet."}</pre
   `;
 }
 
+function renderContextSummaryPanel(props: ChatMetaclawProps): TemplateResult {
+  const summary = props.contextSummary?.content?.trim() ?? "";
+  return html`
+    <section class="metaclaw-panel metaclaw-panel--notes">
+      <div class="metaclaw-panel__head">
+        <div>
+          <div class="metaclaw-panel__title">Compressed History</div>
+          <div class="metaclaw-panel__sub">
+            Manual conversation compression is injected into future prompts for this session.
+          </div>
+        </div>
+        <span class="metaclaw-status-pill metaclaw-status-pill--${summary ? "ready" : "idle"}">
+          ${summary ? "Active" : "Empty"}
+        </span>
+      </div>
+      <pre class="metaclaw-notes">
+${summary || "No compressed history has been stored for this session yet."}</pre
+      >
+    </section>
+  `;
+}
+
 export function renderMetaclawStudio(
   props: ChatMetaclawProps | undefined,
   viewState: ChatMetaclawViewState,
@@ -1055,6 +1125,15 @@ export function renderMetaclawStudio(
                 <button
                   class="btn btn--ghost"
                   type="button"
+                  ?disabled=${props.loading || props.saving || props.compactingHistory}
+                  @click=${props.onCompactHistory}
+                >
+                  ${props.compactingHistory ? icons.loader : icons.scrollText}
+                  ${props.compactingHistory ? "Compressing" : "Compress history"}
+                </button>
+                <button
+                  class="btn btn--ghost"
+                  type="button"
                   ?disabled=${props.loading || props.saving}
                   @click=${props.onRefresh}
                 >
@@ -1082,7 +1161,7 @@ export function renderMetaclawStudio(
               ${renderConnectionPanel(props)} ${renderPendingApprovalsPanel(props)}
               ${renderCommandPolicyPanel(props, viewState, requestUpdate)}
               ${renderAccessListsPanel(props, viewState, requestUpdate)} ${renderSkillsPanel(props)}
-              ${renderNotesPanel(props)}
+              ${renderNotesPanel(props)} ${renderContextSummaryPanel(props)}
             </div>
           </section>
         `

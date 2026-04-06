@@ -70,6 +70,7 @@ import {
   persistMetaclawSettings,
 } from "./controllers/metaclaw.ts";
 import type {
+  MetaclawContextSummary,
   MetaclawImportantNotes,
   MetaclawPendingApproval,
   MetaclawSandboxPolicy,
@@ -433,6 +434,7 @@ export class OpenClawApp extends LitElement {
   @state() metaclawToken = "";
   @state() metaclawLoading = false;
   @state() metaclawSaving = false;
+  @state() metaclawCompactingHistory = false;
   @state() metaclawError: string | null = null;
   @state() metaclawConnected = false;
   @state() metaclawSkills: MetaclawSkillEntry[] = [];
@@ -440,6 +442,7 @@ export class OpenClawApp extends LitElement {
   @state() metaclawSelectionCustomized = false;
   @state() metaclawLatestInjectedSkills: string[] = [];
   @state() metaclawImportantNotes: MetaclawImportantNotes | null = null;
+  @state() metaclawContextSummary: MetaclawContextSummary | null = null;
   @state() metaclawPendingApprovals: MetaclawPendingApproval[] = [];
   @state() metaclawSandboxPolicy: MetaclawSandboxPolicy | null = null;
   @state() metaclawSections = createInitialMetaclawSectionsState();

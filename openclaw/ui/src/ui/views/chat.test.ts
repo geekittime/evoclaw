@@ -214,6 +214,8 @@ function createProps(overrides: Partial<ChatProps> = {}): ChatProps {
     onSend: () => undefined,
     onQueueRemove: () => undefined,
     onNewSession: () => undefined,
+    onCompactHistory: () => undefined,
+    compactingHistory: false,
     agentsList: null,
     currentAgentId: "",
     onAgentChange: () => undefined,
@@ -229,6 +231,7 @@ function createMetaclawProps(
     token: "",
     loading: false,
     saving: false,
+    compactingHistory: false,
     connected: true,
     error: null,
     sections: {
@@ -256,9 +259,15 @@ function createMetaclawProps(
       description: "Persistent notes",
       content: "Remember the last user preference.",
     },
+    contextSummary: {
+      session_id: "agent:main:main",
+      content: "Compressed summary of the chat so far.",
+      has_summary: true,
+    },
     onApiBaseChange: () => undefined,
     onTokenChange: () => undefined,
     onRefresh: () => undefined,
+    onCompactHistory: () => undefined,
     onApprove: () => undefined,
     onReject: () => undefined,
     onSavePolicy: () => undefined,
@@ -896,6 +905,28 @@ describe("chat view", () => {
     }
   });
 
+  it("renders a top-level Compress button when MetaClaw is enabled", () => {
+    const container = document.createElement("div");
+    const onCompactHistory = vi.fn();
+    render(
+      renderChat(
+        createProps({
+          messages: [{ role: "assistant", content: "Done.", timestamp: 1000 }],
+          metaclaw: createMetaclawProps(),
+          onCompactHistory,
+        }),
+      ),
+      container,
+    );
+
+    const compressButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Compress"),
+    );
+    expect(compressButton).toBeTruthy();
+    compressButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(onCompactHistory).toHaveBeenCalledTimes(1);
+  });
+
   it("renders answer-level MetaClaw feedback buttons next to assistant turns", () => {
     const container = document.createElement("div");
     render(
@@ -946,15 +977,25 @@ describe("chat view", () => {
               onApprove,
               onReject,
             }),
+            messages: [
+              {
+                role: "assistant",
+                content: `这个工具在调用前需要获得你的允许。
+Approval ID: approval-1
+exec_command: pwd`,
+                timestamp: 1000,
+              },
+            ],
           }),
         ),
         container,
       );
 
       expect(container.textContent).toContain("Pending Command Approvals");
-      expect(container.textContent).toContain("MetaClaw approval needed");
       expect(container.textContent).toContain("Approve");
       expect(container.textContent).toContain("Reject");
+      expect(container.textContent).not.toContain("这个工具在调用前需要获得你的允许");
+      expect(container.textContent).not.toContain("Approval ID: approval-1");
 
       const buttons = Array.from(container.querySelectorAll("button"));
       buttons.find((button) => button.textContent?.includes("Approve"))?.click();
@@ -968,26 +1009,128 @@ describe("chat view", () => {
     }
   });
 
-  it("shows a MetaClaw approval modal from assistant approval text even when pending approvals are empty", async () => {
+  it("does not render approval transcript text when the assistant only reports a pending approval", () => {
+    const container = document.createElement("div");
+    cleanupChatModuleState();
+    try {
+      render(
+        renderChat(
+          createProps({
+            metaclaw: createMetaclawProps(),
+            messages: [
+              {
+                role: "assistant",
+                content: `这个工具在调用前需要获得你的允许。
+Approval ID: approval-only
+使用 approve 进行批准，或使用 reject 进行拒绝。
+
+exec (low): require_approval | read-only shell command`,
+                timestamp: 1000,
+              },
+            ],
+          }),
+        ),
+        container,
+      );
+
+      expect(container.textContent).not.toContain("这个工具在调用前需要获得你的允许");
+      expect(container.textContent).not.toContain("Approval ID: approval-only");
+      expect(container.textContent).not.toContain("require_approval");
+    } finally {
+      cleanupChatModuleState();
+    }
+  });
+
+  it("hides the latest top approval banner after the user approves it", async () => {
+    const container = document.createElement("div");
+    cleanupChatModuleState();
+    try {
+      const metaclaw = createMetaclawProps({
+        pendingApprovals: [
+          {
+            approval_id: "approval-new",
+            created_at: "2026-04-06 20:00:00",
+            decisions: [
+              {
+                tool_name: "exec_command",
+                command: "rm -rf new",
+                reason: "Needs operator approval",
+              },
+            ],
+          },
+        ],
+      });
+      const props = createProps({
+        metaclaw,
+      });
+      metaclaw.onApprove = vi.fn(async () => {
+        metaclaw.pendingApprovals = [];
+        rerender();
+      });
+
+      const rerender = () => {
+        render(
+          renderChat({
+            ...props,
+            metaclaw,
+            onRequestUpdate: rerender,
+          }),
+          container,
+        );
+      };
+
+      rerender();
+      expect(container.textContent).toContain("Pending Command Approvals");
+
+      const approveButton = Array.from(container.querySelectorAll("button")).find((button) =>
+        button.textContent?.includes("Approve"),
+      );
+      approveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flushTasks();
+
+      expect(metaclaw.onApprove).toHaveBeenCalledWith("approval-new");
+      expect(container.textContent).not.toContain("Pending Command Approvals");
+    } finally {
+      cleanupChatModuleState();
+    }
+  });
+
+  it("shows only the latest approval request in the top banner", async () => {
     const onApprove = vi.fn(async () => undefined);
     const container = document.createElement("div");
     cleanupChatModuleState();
     try {
       const props = createProps({
         metaclaw: createMetaclawProps({
-          pendingApprovals: [],
+          pendingApprovals: [
+            {
+              approval_id: "approval-new",
+              created_at: "2026-04-06 20:00:00",
+              decisions: [
+                {
+                  tool_name: "exec_command",
+                  command: "rm -rf new",
+                  reason: "Needs operator approval",
+                },
+              ],
+            },
+          ],
           onApprove,
         }),
         messages: [
           {
             role: "assistant",
             content: `这个工具在调用前需要获得你的允许。
-Approval ID: appr_505b16cb41c5
-使用 approve 进行批准，或使用 reject 进行拒绝。
-如果有多个待处理的批准，你也可以使用 approve <approval_id> 或 reject <approval_id>.
-
-exec (critical): require_approval | destructive delete command`,
+Approval ID: approval-old
+exec_command: rm -rf old`,
             timestamp: 1000,
+          },
+          {
+            role: "assistant",
+            content: `这个工具在调用前需要获得你的允许。
+Approval ID: approval-new
+exec_command: rm -rf new`,
+            timestamp: 1001,
           },
         ],
       });
@@ -1003,10 +1146,9 @@ exec (critical): require_approval | destructive delete command`,
       };
 
       rerender();
-
-      expect(container.textContent).toContain("MetaClaw approval needed");
-      expect(container.textContent).toContain("appr_505b16cb41c5");
-      expect(container.textContent).toContain("destructive delete command");
+      expect(container.textContent).toContain("Pending Command Approvals");
+      expect(container.textContent).toContain("approval-new");
+      expect(container.textContent).not.toContain("approval-old");
 
       const approveButton = Array.from(container.querySelectorAll("button")).find((button) =>
         button.textContent?.includes("Approve"),
@@ -1014,8 +1156,7 @@ exec (critical): require_approval | destructive delete command`,
       approveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       await flushTasks();
 
-      expect(onApprove).toHaveBeenCalledWith("appr_505b16cb41c5");
-      expect(container.textContent).not.toContain("MetaClaw approval needed");
+      expect(onApprove).toHaveBeenCalledWith("approval-new");
     } finally {
       cleanupChatModuleState();
     }
@@ -1160,6 +1301,39 @@ exec (critical): require_approval | destructive delete command`,
         ".metaclaw-skill-list input[type='checkbox']:checked",
       );
       expect(checkedSkills).toHaveLength(0);
+    } finally {
+      cleanupChatModuleState();
+    }
+  });
+
+  it("shows the stored compressed history inside MetaClaw Studio", async () => {
+    const container = document.createElement("div");
+    cleanupChatModuleState();
+    try {
+      const props = createProps({
+        metaclaw: createMetaclawProps(),
+      });
+
+      const rerender = () => {
+        render(
+          renderChat({
+            ...props,
+            onRequestUpdate: rerender,
+          }),
+          container,
+        );
+      };
+
+      rerender();
+
+      const openButton = Array.from(container.querySelectorAll("button")).find((button) =>
+        button.textContent?.includes("Show MetaClaw Studio"),
+      );
+      openButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flushTasks();
+
+      expect(container.textContent).toContain("Compressed History");
+      expect(container.textContent).toContain("Compressed summary of the chat so far.");
     } finally {
       cleanupChatModuleState();
     }

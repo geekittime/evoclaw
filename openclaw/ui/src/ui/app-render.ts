@@ -83,8 +83,10 @@ import {
 import { loadLogs } from "./controllers/logs.ts";
 import {
   addMetaclawWhitelistEntry,
+  compactMetaclawConversationHistory,
   loadMetaclawState,
   removeMetaclawWhitelistEntry,
+  resolveMetaclawApproval,
   saveMetaclawSandboxPolicy,
   saveMetaclawSkillSelection,
   submitMetaclawFeedback,
@@ -140,6 +142,15 @@ function buildMetaclawFallbackSessionIds(
   }
   const fallbackSessionId = `tui-${modelId}`;
   return fallbackSessionId === state.sessionKey ? [] : [fallbackSessionId];
+}
+
+function buildMetaclawRejectContinuationMessage(approvalId: string): string {
+  return [
+    `The operator rejected MetaClaw approval ${approvalId}.`,
+    "Continue the current task with the existing conversation context without executing the blocked command.",
+    "Do not request the same blocked command again unless the user explicitly changes the task.",
+    "If a safe alternative exists, proceed with it; otherwise explain what is blocked and offer the next safest next step.",
+  ].join(" ");
 }
 
 let _pendingUpdate: (() => void) | undefined;
@@ -1499,6 +1510,19 @@ export function renderApp(state: AppViewState) {
               attachments: state.chatAttachments,
               onAttachmentsChange: (next) => (state.chatAttachments = next),
               onSend: () => state.handleSendChat(),
+              onCompactHistory: async () => {
+                if (state.metaclawCompactingHistory || state.chatMessages.length === 0) {
+                  return;
+                }
+                state.metaclawCompactingHistory = true;
+                try {
+                  await compactMetaclawConversationHistory(state, state.chatMessages);
+                } finally {
+                  state.metaclawCompactingHistory = false;
+                  state.scheduleMetaclawRefresh(0);
+                }
+              },
+              compactingHistory: state.metaclawCompactingHistory,
               canAbort: Boolean(state.chatRunId),
               onAbort: () => void state.handleAbortChat(),
               onQueueRemove: (id) => state.removeQueuedMessage(id),
@@ -1557,6 +1581,7 @@ export function renderApp(state: AppViewState) {
                 token: state.metaclawToken,
                 loading: state.metaclawLoading,
                 saving: state.metaclawSaving,
+                compactingHistory: state.metaclawCompactingHistory,
                 connected: state.metaclawConnected,
                 error: state.metaclawError,
                 pendingApprovals: state.metaclawPendingApprovals,
@@ -1566,29 +1591,71 @@ export function renderApp(state: AppViewState) {
                 selectionCustomized: state.metaclawSelectionCustomized,
                 latestInjectedSkills: state.metaclawLatestInjectedSkills,
                 importantNotes: state.metaclawImportantNotes,
+                contextSummary: state.metaclawContextSummary,
                 sections: state.metaclawSections,
                 onApiBaseChange: (value) => (state.metaclawApiBase = value),
                 onTokenChange: (value) => (state.metaclawToken = value),
                 onRefresh: () => loadMetaclawState(state),
+                onCompactHistory: async () => {
+                  if (state.metaclawCompactingHistory || state.chatMessages.length === 0) {
+                    return;
+                  }
+                  state.metaclawCompactingHistory = true;
+                  try {
+                    await compactMetaclawConversationHistory(state, state.chatMessages);
+                  } finally {
+                    state.metaclawCompactingHistory = false;
+                    state.scheduleMetaclawRefresh(0);
+                  }
+                },
                 onApprove: async (approvalId) => {
-                  await sendHiddenSystemChatMessage(state, `approve ${approvalId}`, {
-                    sourceTool: METACLAW_APPROVAL_SOURCE_TOOL,
-                    sourceSessionKey: state.sessionKey,
-                    appendAssistantErrorOnFailure: false,
-                  });
-                  state.metaclawPendingApprovals = state.metaclawPendingApprovals.filter(
-                    (item) => item.approval_id !== approvalId,
-                  );
+                  if (state.metaclawSaving) {
+                    return;
+                  }
+                  state.metaclawPendingApprovals = [];
+                  state.metaclawSaving = true;
+                  try {
+                    await sendHiddenSystemChatMessage(state, `approve ${approvalId}`, {
+                      sourceTool: METACLAW_APPROVAL_SOURCE_TOOL,
+                      sourceSessionKey: state.sessionKey,
+                      appendAssistantErrorOnFailure: false,
+                    });
+                  } catch (error) {
+                    state.metaclawError = error instanceof Error ? error.message : String(error);
+                    throw error;
+                  } finally {
+                    state.metaclawSaving = false;
+                    state.scheduleMetaclawRefresh(150);
+                  }
                 },
                 onReject: async (approvalId) => {
-                  await sendHiddenSystemChatMessage(state, `reject ${approvalId}`, {
-                    sourceTool: METACLAW_APPROVAL_SOURCE_TOOL,
-                    sourceSessionKey: state.sessionKey,
-                    appendAssistantErrorOnFailure: false,
-                  });
-                  state.metaclawPendingApprovals = state.metaclawPendingApprovals.filter(
-                    (item) => item.approval_id !== approvalId,
-                  );
+                  if (state.metaclawSaving) {
+                    return;
+                  }
+                  state.metaclawPendingApprovals = [];
+                  try {
+                    await resolveMetaclawApproval(
+                      state,
+                      approvalId,
+                      "reject",
+                      buildMetaclawFallbackSessionIds(state),
+                    );
+                    state.metaclawPendingApprovals = [];
+                    await sendHiddenSystemChatMessage(
+                      state,
+                      buildMetaclawRejectContinuationMessage(approvalId),
+                      {
+                        sourceTool: METACLAW_APPROVAL_SOURCE_TOOL,
+                        sourceSessionKey: state.sessionKey,
+                        appendAssistantErrorOnFailure: false,
+                      },
+                    );
+                  } catch (error) {
+                    state.metaclawError = error instanceof Error ? error.message : String(error);
+                    throw error;
+                  } finally {
+                    state.scheduleMetaclawRefresh(150);
+                  }
                 },
                 onSavePolicy: (policy) => saveMetaclawSandboxPolicy(state, policy),
                 onAddWhitelistEntry: (type, value) => addMetaclawWhitelistEntry(state, type, value),

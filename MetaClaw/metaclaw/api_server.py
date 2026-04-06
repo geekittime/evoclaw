@@ -47,6 +47,7 @@ from .sandbox import (
 )
 from .skill_manager import SkillManager
 from .utils import (
+    log_llm_prompt,
     run_context_summary_llm,
     run_feedback_skill_llm,
     run_llm,
@@ -112,6 +113,33 @@ def _flatten_message_content(content) -> str:
     return str(content) if content is not None else ""
 
 
+def _log_main_llm_prompt(
+    label: str,
+    *,
+    session_id: str,
+    turn_type: str,
+    model: str,
+    messages: list[dict],
+    tools: Any = None,
+):
+    tool_names: list[str] = []
+    if isinstance(tools, list):
+        for tool in tools:
+            if not isinstance(tool, dict):
+                continue
+            fn = tool.get("function")
+            if isinstance(fn, dict):
+                name = str(fn.get("name", "") or "").strip()
+                if name:
+                    tool_names.append(name)
+    tool_suffix = f" tools={tool_names}" if tool_names else ""
+    log_llm_prompt(
+        f"{label} session={session_id} turn_type={turn_type}{tool_suffix}",
+        messages,
+        model_id=model,
+    )
+
+
 def _normalize_assistant_content_parts(content: list[dict]) -> tuple[str, list[dict]]:
     """Extract plain text and OpenAI-style tool_calls from assistant content parts."""
     text_parts: list[str] = []
@@ -161,6 +189,33 @@ _INLINE_FEEDBACK_PATTERNS = [
     re.compile(r"^/(?:feedback|fb|fd)\s+(good|bad)\s*(.*)$", re.IGNORECASE),
 ]
 _INLINE_APPROVAL_RE = re.compile(r"^(?:/)?(approve|reject)\s*([A-Za-z0-9_-]+)?\s*$", re.IGNORECASE)
+_OPENCLAW_SKILLS_SECTION_RE = re.compile(
+    r"(?:\n|^)## Skills \(mandatory\)\n.*?</available_skills>\s*",
+    re.DOTALL,
+)
+_OPENCLAW_AVAILABLE_SKILLS_RE = re.compile(
+    r"(?:\n|^)<available_skills>\n.*?</available_skills>\s*",
+    re.DOTALL,
+)
+_ACTIVE_SKILLS_SECTION_RE = re.compile(
+    r"(?:\n|^)## Active Skills\b.*?(?=\n## [^\n]+|\Z)",
+    re.DOTALL,
+)
+_CONTEXT_SUMMARY_SECTION_RE = re.compile(
+    r"(?:\n|^)## Conversation Summary\b.*\Z",
+    re.DOTALL,
+)
+
+
+def _strip_skill_prompt_sections(text: str) -> str:
+    if not text:
+        return ""
+    cleaned = _OPENCLAW_SKILLS_SECTION_RE.sub("\n", text)
+    cleaned = _OPENCLAW_AVAILABLE_SKILLS_RE.sub("\n", cleaned)
+    cleaned = _ACTIVE_SKILLS_SECTION_RE.sub("\n", cleaned)
+    cleaned = _CONTEXT_SUMMARY_SECTION_RE.sub("\n", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
 
 def _normalize_tool_name(raw_name: str, args_raw: str) -> str:
     """
@@ -1336,6 +1391,28 @@ class MetaClawAPIServer:
             await owner._check_auth(authorization)
             return JSONResponse(content=owner._build_skills_payload(session_id=session_id.strip()))
 
+        @app.post("/v1/context-summary/compact")
+        async def compact_context_summary(
+            request: Request,
+            authorization: Optional[str] = Header(default=None),
+        ):
+            owner: MetaClawAPIServer = request.app.state.owner
+            await owner._check_auth(authorization)
+            body = await request.json()
+            session_id = str(body.get("session_id", "") or "").strip()
+            messages = body.get("messages")
+            if not session_id:
+                raise HTTPException(status_code=400, detail="session_id is required")
+            if not isinstance(messages, list):
+                raise HTTPException(status_code=400, detail="messages must be a list")
+            summary = await owner._handle_manual_context_summary_compaction(session_id, messages)
+            return JSONResponse(content={
+                "ok": True,
+                "session_id": session_id,
+                "summary": summary,
+                "has_summary": bool(summary),
+            })
+
         @app.put("/v1/skills/selection")
         async def set_skill_selection(
             request: Request,
@@ -1836,6 +1913,35 @@ class MetaClawAPIServer:
         self._save_context_summaries()
         return text
 
+    def _resolve_context_summary_text(self, session_id: str) -> str:
+        for candidate in self._resolve_related_session_ids(session_id):
+            text = str(self._session_context_summaries.get(candidate, "") or "").strip()
+            if text:
+                return text
+        return str(self._session_context_summaries.get(session_id, "") or "").strip()
+
+    def _build_context_summary_payload(self, session_id: str) -> dict[str, Any]:
+        summary_text = self._resolve_context_summary_text(session_id)
+        return {
+            "session_id": session_id,
+            "content": summary_text,
+            "has_summary": bool(summary_text),
+        }
+
+    async def _handle_manual_context_summary_compaction(
+        self,
+        session_id: str,
+        messages: list[dict[str, Any]],
+    ) -> str:
+        normalized_messages = [item for item in messages if isinstance(item, dict)]
+        latest_instruction = _extract_last_user_instruction(normalized_messages)
+        summary = await self._summarize_dropped_context(
+            session_id,
+            normalized_messages,
+            latest_instruction,
+        )
+        return self._store_context_summary(session_id, summary)
+
     def _append_session_report(self, report: dict[str, Any]) -> None:
         if not self._session_report_file:
             return
@@ -2099,8 +2205,13 @@ class MetaClawAPIServer:
         raw_text = _extract_last_user_instruction(messages)
         if session_id in self._pending_records:
             self._flush_pending_record(session_id, {"role": "user", "content": raw_text})
+        record = self._find_pending_approval_for_session(session_id, approval_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="pending approval not found for this session")
+        record_session_id = str(record.get("session_id", "") or "").strip() or session_id
+        record_approval_id = str(record.get("approval_id", "") or "").strip() or approval_id
         if action == "approve":
-            record = self._sandbox_approvals.approve(session_id, approval_id)
+            record = self._sandbox_approvals.approve(record_session_id, record_approval_id)
             if record is None:
                 raise HTTPException(status_code=404, detail="pending approval not found for this session")
             tool_calls = record.get("tool_calls", [])
@@ -2135,7 +2246,7 @@ class MetaClawAPIServer:
                 extra={"approval_id": record.get("approval_id", "")},
                 turn=turn_num,
             )
-        record = self._sandbox_approvals.reject(session_id, approval_id)
+        record = self._sandbox_approvals.reject(record_session_id, record_approval_id)
         if record is None:
             raise HTTPException(status_code=404, detail="pending approval not found for this session")
         self._append_sandbox_audit(
@@ -2584,6 +2695,8 @@ class MetaClawAPIServer:
                     if isinstance(m, dict) and m.get("role") == "system":
                         m["content"] = cached_system
 
+        messages = self._sanitize_system_skill_prompt(messages, session_id=session_id)
+
         tools = _normalize_tools_for_template(body.get("tools"))
 
         effective_memory_scope = memory_scope or self._get_memory_scope(session_id)
@@ -2610,6 +2723,7 @@ class MetaClawAPIServer:
                 messages = await self._inject_memory(messages, scope_id=effective_memory_scope)
             elif self.skill_manager:
                 messages = self._inject_skills(messages, session_id=session_id)
+        messages = self._inject_stored_context_summary(messages, session_id)
         if cached_system:
             logger.info(
                 "[OpenClaw] system prompt cached len=%d",
@@ -2631,6 +2745,14 @@ class MetaClawAPIServer:
         if "model" not in forward_body:
             forward_body["model"] = self._served_model
         forward_body["messages"] = _ensure_reasoning_content(messages)
+        _log_main_llm_prompt(
+            "main-forward",
+            session_id=session_id,
+            turn_type=turn_type,
+            model=str(forward_body.get("model", "") or self._served_model),
+            messages=forward_body["messages"],
+            tools=forward_body.get("tools"),
+        )
         self._append_sandbox_audit(
             "pre_llm_forward",
             session_id=session_id,
@@ -2936,6 +3058,11 @@ class MetaClawAPIServer:
                 tokenize=False,
                 add_generation_prompt=True,
             )
+            logger.info(
+                "[LLM PROMPT] tinker-rendered model=%s\n%s",
+                str(body.get("model", self._served_model) or self._served_model),
+                prompt_text,
+            )
             prompt_ids = self._tokenizer.encode(prompt_text, add_special_tokens=False)
 
             # Build Tinker ModelInput
@@ -3231,6 +3358,7 @@ class MetaClawAPIServer:
                 + list(self._feedback_by_session.keys())
                 + list(self._turn_counts.keys())
                 + list(self._session_skill_overrides.keys())
+                + list(self._session_context_summaries.keys())
             ):
                 candidate = str(candidate_session or "").strip()
                 if candidate.startswith("tui-"):
@@ -3308,7 +3436,7 @@ class MetaClawAPIServer:
         )
 
         skill_text = self.skill_manager.format_for_conversation(skills)
-        next_messages = list(messages)
+        next_messages = self._sanitize_system_skill_prompt(messages, session_id=session_id)
         sys_indices = [i for i, m in enumerate(next_messages) if m.get("role") == "system"]
         if sys_indices:
             idx = sys_indices[0]
@@ -3320,6 +3448,26 @@ class MetaClawAPIServer:
         if session_id:
             self._latest_injected_skills[session_id] = skill_names
         return next_messages
+
+    def _sanitize_system_skill_prompt(self, messages: list[dict], session_id: str = "") -> list[dict]:
+        sanitized: list[dict] = []
+        stripped_count = 0
+        for msg in messages:
+            if not isinstance(msg, dict) or msg.get("role") != "system":
+                sanitized.append(msg)
+                continue
+            existing = _flatten_message_content(msg.get("content", ""))
+            cleaned = _strip_skill_prompt_sections(existing)
+            if cleaned != existing:
+                stripped_count += 1
+            sanitized.append({**msg, "content": cleaned})
+        if stripped_count:
+            logger.info(
+                "[SkillManager] stripped upstream skill prompt sections from %d system message(s) for session=%s",
+                stripped_count,
+                session_id or "<unknown>",
+            )
+        return sanitized
 
     def _build_skills_payload(self, session_id: str = "") -> dict[str, Any]:
         important = self._ensure_important_skill_exists() if self.skill_manager else None
@@ -3340,6 +3488,11 @@ class MetaClawAPIServer:
                 "name": important.get("name", "") if important else "",
                 "description": important.get("description", "") if important else "",
                 "content": important.get("content", "") if important else "",
+            },
+            "context_summary": self._build_context_summary_payload(session_id) if session_id else {
+                "session_id": "",
+                "content": "",
+                "has_summary": False,
             },
         }
 
@@ -3767,7 +3920,13 @@ class MetaClawAPIServer:
         summary_text: str,
     ) -> list[dict]:
         summary_block = self._build_summary_system_block(summary_text)
-        base = list(sys_msgs)
+        base = []
+        for msg in sys_msgs:
+            if not isinstance(msg, dict):
+                continue
+            existing = _flatten_message_content(msg.get("content", ""))
+            cleaned = _strip_skill_prompt_sections(existing)
+            base.append({**msg, "content": cleaned})
         if base:
             existing = _flatten_message_content(base[0].get("content", "")).strip()
             merged = f"{existing}\n\n{summary_block}" if existing else summary_block
@@ -3775,6 +3934,14 @@ class MetaClawAPIServer:
         else:
             base = [{"role": "system", "content": summary_block}]
         return base + list(kept_non_sys)
+
+    def _inject_stored_context_summary(self, messages: list[dict], session_id: str) -> list[dict]:
+        summary_text = self._resolve_context_summary_text(session_id)
+        if not summary_text:
+            return messages
+        sys_msgs = [m for m in messages if isinstance(m, dict) and m.get("role") == "system"]
+        non_sys = [m for m in messages if not isinstance(m, dict) or m.get("role") != "system"]
+        return self._with_context_summary(sys_msgs, non_sys, summary_text)
 
     async def _summarize_dropped_context(
         self,

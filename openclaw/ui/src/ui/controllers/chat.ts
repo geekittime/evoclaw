@@ -4,6 +4,7 @@ import {
   type InputProvenance,
 } from "../../../../src/sessions/input-provenance.js";
 import { resetToolStream } from "../app-tool-stream.ts";
+import { isAssistantMetaclawApprovalPromptMessage } from "../chat/metaclaw-approval.ts";
 import { extractText } from "../chat/message-extract.ts";
 import { formatConnectError } from "../connect-error.ts";
 import type { GatewayBrowserClient } from "../gateway.ts";
@@ -105,7 +106,10 @@ export async function loadChatHistory(state: ChatState) {
     );
     const messages = Array.isArray(res.messages) ? res.messages : [];
     state.chatMessages = messages.filter(
-      (message) => !isAssistantSilentReply(message) && !isHiddenInternalSystemMessage(message),
+      (message) =>
+        !isAssistantSilentReply(message) &&
+        !isAssistantMetaclawApprovalPromptMessage(message) &&
+        !isHiddenInternalSystemMessage(message),
     );
     state.chatThinkingLevel = res.thinkingLevel ?? null;
     // Clear all streaming state — history includes tool results and text
@@ -392,7 +396,11 @@ export function handleChatEvent(state: ChatState, payload?: ChatEventPayload) {
   if (payload.runId && state.chatRunId && payload.runId !== state.chatRunId) {
     if (payload.state === "final") {
       const finalMessage = normalizeFinalAssistantMessage(payload.message);
-      if (finalMessage && !isAssistantSilentReply(finalMessage)) {
+      if (
+        finalMessage &&
+        !isAssistantSilentReply(finalMessage) &&
+        !isAssistantMetaclawApprovalPromptMessage(finalMessage)
+      ) {
         state.chatMessages = [...state.chatMessages, finalMessage];
         return null;
       }
@@ -404,14 +412,32 @@ export function handleChatEvent(state: ChatState, payload?: ChatEventPayload) {
 
   if (payload.state === "delta") {
     const next = extractText(payload.message);
-    if (typeof next === "string" && !isSilentReplyStream(next)) {
+    if (
+      typeof next === "string" &&
+      !isSilentReplyStream(next) &&
+      !isAssistantMetaclawApprovalPromptMessage({
+        role: "assistant",
+        content: [{ type: "text", text: next }],
+      })
+    ) {
       state.chatStream = next;
     }
   } else if (payload.state === "final") {
     const finalMessage = normalizeFinalAssistantMessage(payload.message);
-    if (finalMessage && !isAssistantSilentReply(finalMessage)) {
+    if (
+      finalMessage &&
+      !isAssistantSilentReply(finalMessage) &&
+      !isAssistantMetaclawApprovalPromptMessage(finalMessage)
+    ) {
       state.chatMessages = [...state.chatMessages, finalMessage];
-    } else if (state.chatStream?.trim() && !isSilentReplyStream(state.chatStream)) {
+    } else if (
+      state.chatStream?.trim() &&
+      !isSilentReplyStream(state.chatStream) &&
+      !isAssistantMetaclawApprovalPromptMessage({
+        role: "assistant",
+        content: [{ type: "text", text: state.chatStream }],
+      })
+    ) {
       state.chatMessages = [
         ...state.chatMessages,
         {
@@ -428,11 +454,22 @@ export function handleChatEvent(state: ChatState, payload?: ChatEventPayload) {
     state.chatStreamStartedAt = null;
   } else if (payload.state === "aborted") {
     const normalizedMessage = normalizeAbortedAssistantMessage(payload.message);
-    if (normalizedMessage && !isAssistantSilentReply(normalizedMessage)) {
+    if (
+      normalizedMessage &&
+      !isAssistantSilentReply(normalizedMessage) &&
+      !isAssistantMetaclawApprovalPromptMessage(normalizedMessage)
+    ) {
       state.chatMessages = [...state.chatMessages, normalizedMessage];
     } else {
       const streamedText = state.chatStream ?? "";
-      if (streamedText.trim() && !isSilentReplyStream(streamedText)) {
+      if (
+        streamedText.trim() &&
+        !isSilentReplyStream(streamedText) &&
+        !isAssistantMetaclawApprovalPromptMessage({
+          role: "assistant",
+          content: [{ type: "text", text: streamedText }],
+        })
+      ) {
         state.chatMessages = [
           ...state.chatMessages,
           {

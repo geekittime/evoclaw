@@ -88,6 +88,7 @@ type GatewayHost = {
   execApprovalQueue: ExecApprovalRequest[];
   execApprovalError: string | null;
   updateAvailable: UpdateAvailable | null;
+  scheduleMetaclawRefresh?: (delayMs?: number) => void;
 };
 
 type SessionDefaultsSnapshot = {
@@ -355,6 +356,12 @@ function handleChatGatewayEvent(host: GatewayHost, payload: ChatEventPayload | u
   const historyReloaded = handleTerminalChatEvent(host, payload, state);
   if (state === "final" && !historyReloaded && shouldReloadHistoryForFinalEvent(payload)) {
     void loadChatHistory(host as unknown as OpenClawApp);
+  }
+  if (
+    payload?.sessionKey === host.sessionKey &&
+    (state === "final" || state === "aborted" || state === "error")
+  ) {
+    host.scheduleMetaclawRefresh?.(0);
   }
 }
 

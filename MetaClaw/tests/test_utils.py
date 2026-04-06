@@ -209,3 +209,167 @@ def test_handle_request_falls_back_to_raw_system_prompt(monkeypatch, tmp_path):
 
     assert forwarded["body"]["messages"][0]["content"] == "raw system prompt"
     assert result["response"]["choices"][0]["message"]["content"] == "ok"
+
+
+def test_handle_request_strips_upstream_skill_catalog_and_keeps_selected_skills(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setattr(
+        MetaClawAPIServer,
+        "_load_tokenizer",
+        lambda self: None,
+    )
+
+    config = MetaClawConfig(
+        mode="skills_only",
+        claw_type="openclaw",
+        llm_provider="custom",
+        llm_api_base="https://live.example/v1",
+        llm_api_key="live-key",
+        llm_model_id="live-model",
+        record_enabled=False,
+        record_dir=str(tmp_path),
+        task_brief_enabled=False,
+        user_profile_enabled=False,
+        session_report_enabled=False,
+        context_summary_enabled=False,
+    )
+    server = MetaClawAPIServer(
+        config=config,
+        output_queue=queue.Queue(),
+        submission_enabled=threading.Event(),
+    )
+    server.skill_manager = SimpleNamespace(
+        record_skill_selection=lambda names: None,
+        format_for_conversation=lambda skills: (
+            "## Active Skills\n\n### weather\n_selected_\n\nUse the weather skill only."
+        ),
+    )
+    server._session_skill_overrides["session-1"] = ["weather"]
+    server._list_all_skills = lambda: [
+        {
+            "name": "weather",
+            "description": "selected",
+            "content": "Use the weather skill only.",
+        }
+    ]
+
+    forwarded = {}
+
+    async def fake_forward(self, body):
+        forwarded["body"] = body
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "ok",
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setattr(MetaClawAPIServer, "_forward_to_llm", fake_forward)
+
+    upstream_system = (
+        "You are a personal assistant running inside OpenClaw.\n"
+        "## Skills (mandatory)\n"
+        "Before replying: scan <available_skills> <description> entries.\n"
+        "<available_skills>\n"
+        "  <skill>\n"
+        "    <name>demo</name>\n"
+        "  </skill>\n"
+        "</available_skills>\n"
+        "## Memory Recall\n"
+        "Check memory when needed."
+    )
+
+    asyncio.run(
+        server._handle_request(
+            body={
+                "messages": [
+                    {"role": "system", "content": upstream_system},
+                    {"role": "user", "content": "hello"},
+                ]
+            },
+            session_id="session-1",
+            turn_type="main",
+            session_done=False,
+        )
+    )
+
+    forwarded_system = forwarded["body"]["messages"][0]["content"]
+    assert "## Skills (mandatory)" not in forwarded_system
+    assert "<available_skills>" not in forwarded_system
+    assert "demo" not in forwarded_system
+    assert "## Memory Recall" in forwarded_system
+    assert "## Active Skills" in forwarded_system
+    assert "weather" in forwarded_system
+
+
+def test_handle_request_injects_stored_context_summary(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        MetaClawAPIServer,
+        "_load_tokenizer",
+        lambda self: None,
+    )
+
+    config = MetaClawConfig(
+        mode="skills_only",
+        claw_type="openclaw",
+        llm_provider="custom",
+        llm_api_base="https://live.example/v1",
+        llm_api_key="live-key",
+        llm_model_id="live-model",
+        record_enabled=False,
+        record_dir=str(tmp_path),
+        task_brief_enabled=False,
+        user_profile_enabled=False,
+        session_report_enabled=False,
+    )
+    server = MetaClawAPIServer(
+        config=config,
+        output_queue=queue.Queue(),
+        submission_enabled=threading.Event(),
+    )
+    server._session_context_summaries["session-1"] = (
+        "- User wants concise progress updates.\n"
+        "- Already confirmed the target file path."
+    )
+
+    forwarded = {}
+
+    async def fake_forward(self, body):
+        forwarded["body"] = body
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "ok",
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setattr(MetaClawAPIServer, "_forward_to_llm", fake_forward)
+
+    asyncio.run(
+        server._handle_request(
+            body={
+                "messages": [
+                    {"role": "system", "content": "raw system prompt"},
+                    {"role": "user", "content": "hello"},
+                ]
+            },
+            session_id="session-1",
+            turn_type="main",
+            session_done=False,
+        )
+    )
+
+    forwarded_system = forwarded["body"]["messages"][0]["content"]
+    assert "raw system prompt" in forwarded_system
+    assert "## Conversation Summary" in forwarded_system
+    assert "concise progress updates" in forwarded_system
