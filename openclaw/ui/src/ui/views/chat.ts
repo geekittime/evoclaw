@@ -136,7 +136,11 @@ export type ChatProps = {
     onAddWhitelistEntry: (type: "command" | "path", value: string) => void;
     onRemoveWhitelistEntry: (type: "command" | "path", value: string) => void;
     onSaveSkillSelection: (skillNames: string[] | null) => void;
-    onSubmitFeedback: (rating: "good" | "bad", feedback: string) => Promise<void>;
+    onSubmitFeedback: (
+      turn: number | null,
+      rating: "good" | "bad",
+      feedback: string,
+    ) => Promise<void>;
   };
 };
 
@@ -180,7 +184,7 @@ interface ChatEphemeralState {
   searchOpen: boolean;
   searchQuery: string;
   pinnedExpanded: boolean;
-  feedbackOpen: boolean;
+  feedbackTargetTurn: number | null;
   feedbackRating: "good" | "bad";
   feedbackText: string;
   feedbackSaving: boolean;
@@ -204,7 +208,7 @@ function createChatEphemeralState(): ChatEphemeralState {
     searchOpen: false,
     searchQuery: "",
     pinnedExpanded: false,
-    feedbackOpen: false,
+    feedbackTargetTurn: null,
     feedbackRating: "good",
     feedbackText: "",
     feedbackSaving: false,
@@ -933,22 +937,58 @@ function renderMetaclawStudio(props: ChatProps, requestUpdate: () => void): Temp
   `;
 }
 
-function renderLatestFeedback(props: ChatProps, requestUpdate: () => void): TemplateResult | typeof nothing {
-  if (!props.metaclaw) {
+function extractAssistantTurn(group: MessageGroup): number | null {
+  for (let index = group.messages.length - 1; index >= 0; index -= 1) {
+    const message = group.messages[index]?.message as Record<string, unknown> | undefined;
+    const rawTurn = message?.turn ?? message?.metaclaw_turn;
+    if (typeof rawTurn === "number" && Number.isFinite(rawTurn)) {
+      return rawTurn;
+    }
+    if (typeof rawTurn === "string" && rawTurn.trim()) {
+      const parsed = Number(rawTurn);
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+  }
+  return null;
+}
+
+function renderAssistantFeedback(
+  group: MessageGroup,
+  props: ChatProps,
+  requestUpdate: () => void,
+): TemplateResult | typeof nothing {
+  if (!props.metaclaw || normalizeRoleForGrouping(group.role) !== "assistant") {
     return nothing;
   }
+  const turn = extractAssistantTurn(group);
+  if (turn == null) {
+    return nothing;
+  }
+  const isOpen = vs.feedbackTargetTurn === turn;
   return html`
     <div class="metaclaw-feedback">
-      <div class="metaclaw-feedback__title">Feedback for the latest agent answer</div>
+      <div class="metaclaw-feedback__title">Feedback for answer #${turn}</div>
       <div class="metaclaw-feedback__actions">
-        <button class="btn ${vs.feedbackRating === "good" ? "primary" : ""}" type="button" @click=${() => { vs.feedbackOpen = true; vs.feedbackRating = "good"; requestUpdate(); }}>
+        <button class="btn ${isOpen && vs.feedbackRating === "good" ? "primary" : ""}" type="button" @click=${() => {
+          vs.feedbackTargetTurn = turn;
+          vs.feedbackRating = "good";
+          vs.feedbackMessage = "";
+          requestUpdate();
+        }}>
           ${icons.check} Good
         </button>
-        <button class="btn ${vs.feedbackRating === "bad" ? "danger" : ""}" type="button" @click=${() => { vs.feedbackOpen = true; vs.feedbackRating = "bad"; requestUpdate(); }}>
+        <button class="btn ${isOpen && vs.feedbackRating === "bad" ? "danger" : ""}" type="button" @click=${() => {
+          vs.feedbackTargetTurn = turn;
+          vs.feedbackRating = "bad";
+          vs.feedbackMessage = "";
+          requestUpdate();
+        }}>
           ${icons.x} Bad
         </button>
       </div>
-      ${vs.feedbackOpen
+      ${isOpen
         ? html`
             <textarea
               class="metaclaw-feedback__input"
@@ -965,7 +1005,7 @@ function renderLatestFeedback(props: ChatProps, requestUpdate: () => void): Temp
                 vs.feedbackMessage = "";
                 requestUpdate();
                 try {
-                  await props.metaclaw!.onSubmitFeedback(vs.feedbackRating, vs.feedbackText.trim());
+                  await props.metaclaw!.onSubmitFeedback(turn, vs.feedbackRating, vs.feedbackText.trim());
                   vs.feedbackMessage = vs.feedbackRating === "bad" ? "Lesson appended to important-notes." : "Feedback recorded.";
                   vs.feedbackText = "";
                 } finally {
@@ -974,7 +1014,7 @@ function renderLatestFeedback(props: ChatProps, requestUpdate: () => void): Temp
                 }
               }}>Submit</button>
               <button class="btn" type="button" ?disabled=${vs.feedbackSaving} @click=${() => {
-                vs.feedbackOpen = false;
+                vs.feedbackTargetTurn = null;
                 vs.feedbackText = "";
                 vs.feedbackMessage = "";
                 requestUpdate();
@@ -1332,7 +1372,7 @@ export function renderChat(props: ChatProps) {
               if (deleted.has(item.key)) {
                 return nothing;
               }
-              return renderMessageGroup(item, {
+              const groupView = renderMessageGroup(item, {
                 onOpenSidebar: props.onOpenSidebar,
                 showReasoning,
                 showToolCalls: props.showToolCalls,
@@ -1346,6 +1386,7 @@ export function renderChat(props: ChatProps) {
                   requestUpdate();
                 },
               });
+              return html`${groupView}${renderAssistantFeedback(item, props, requestUpdate)}`;
             }
             return nothing;
           },
@@ -1565,7 +1606,6 @@ export function renderChat(props: ChatProps) {
       ${renderFallbackIndicator(props.fallbackStatus)}
       ${renderCompactionIndicator(props.compactionStatus)}
       ${renderContextNotice(activeSession, props.sessions?.defaults?.contextTokens ?? null)}
-      ${renderLatestFeedback(props, requestUpdate)}
       ${
         props.showNewMessages
           ? html`

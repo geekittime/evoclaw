@@ -182,6 +182,7 @@ export async function saveMetaclawSkillSelection(
 
 export async function submitMetaclawFeedback(
   state: Pick<MetaclawState, "sessionKey" | "metaclawApiBase" | "metaclawToken">,
+  turn: number | null,
   rating: "good" | "bad",
   feedback: string,
 ) {
@@ -189,6 +190,7 @@ export async function submitMetaclawFeedback(
     method: "POST",
     body: JSON.stringify({
       session_id: state.sessionKey,
+      turn,
       rating,
       feedback,
     }),

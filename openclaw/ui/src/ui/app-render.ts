@@ -1553,8 +1553,8 @@ export function renderApp(state: AppViewState) {
                 onRemoveWhitelistEntry: (type, value) =>
                   removeMetaclawWhitelistEntry(state, type, value),
                 onSaveSkillSelection: (skillNames) => saveMetaclawSkillSelection(state, skillNames),
-                onSubmitFeedback: async (rating, feedback) => {
-                  await submitMetaclawFeedback(state, rating, feedback);
+                onSubmitFeedback: async (turn, rating, feedback) => {
+                  await submitMetaclawFeedback(state, turn, rating, feedback);
                   await loadMetaclawState(state);
                 },
               },

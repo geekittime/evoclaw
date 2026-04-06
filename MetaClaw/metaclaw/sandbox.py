@@ -493,24 +493,6 @@ class SandboxPolicyEngine:
                 if self.whitelist_manager is not None and command
                 else None
             )
-            if (
-                self.whitelist_manager is not None
-                and command
-                and self.whitelist_manager.is_command_allowed(command)
-            ):
-                decisions.append(
-                    SandboxDecision(
-                        tool_call_id=str(tc.get("id", "") or ""),
-                        tool_name=tool_name,
-                        risk_level="allowlisted",
-                        action="allow",
-                        reason="command allowlisted",
-                        command=command,
-                        paths=self.path_policy._collect_paths(args),
-                        args=args,
-                    )
-                )
-                continue
             risk_level, reason = self._risk_for(tool_name, args, command)
             if self.path_policy_enabled:
                 path_action, paths, path_violations = self.path_policy.inspect(
@@ -522,18 +504,17 @@ class SandboxPolicyEngine:
                 path_action, paths, path_violations = "allow", [], []
             action = "allow"
             reasons = [reason] if reason else []
+            allowlisted = bool(
+                self.whitelist_manager is not None
+                and command
+                and self.whitelist_manager.is_command_allowed(command)
+            )
             if path_violations:
                 action = "deny"
                 reasons.extend(path_violations)
             elif path_action == "require_approval":
                 action = "require_approval"
-                reasons.extend(path_violations or [])
                 reasons.append("path policy requires approval")
-            if action == "allow" and self.command_policy_enabled and risk_level in {"high", "critical"}:
-                action = "require_approval"
-            if action == "allow" and self.command_policy_enabled and self._is_destructive_file_op(tool_name, args):
-                action = "require_approval"
-                reasons.append("destructive file operation requires approval")
             if action == "allow" and explicit_command_mode == "deny":
                 action = "deny"
                 reasons.append("blocked by explicit command rule")
@@ -542,8 +523,23 @@ class SandboxPolicyEngine:
                 reasons.append("explicit command rule requires approval")
             elif explicit_command_mode == "allow":
                 reasons.append("explicit command rule allows execution")
-            elif (
+            elif action == "allow" and allowlisted:
+                reasons.append("command allowlisted")
+            elif action == "allow" and self.command_policy_enabled and risk_level in {"high", "critical"}:
+                action = "require_approval"
+            if (
                 action == "allow"
+                and explicit_command_mode is None
+                and not allowlisted
+                and self.command_policy_enabled
+                and self._is_destructive_file_op(tool_name, args)
+            ):
+                action = "require_approval"
+                reasons.append("destructive file operation requires approval")
+            if (
+                action == "allow"
+                and explicit_command_mode is None
+                and not allowlisted
                 and self.whitelist_manager is not None
                 and command
                 and self.command_policy_enabled

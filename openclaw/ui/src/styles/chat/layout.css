@@ -647,7 +647,18 @@
 }
 
 .metaclaw-feedback {
-  margin: 0 18px 12px;
+  margin: 8px 18px 12px 74px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--border) 68%, transparent);
+  border-radius: var(--radius-lg);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--panel) 92%, transparent), color-mix(in srgb, var(--card) 90%, transparent)),
+    radial-gradient(circle at top right, color-mix(in srgb, var(--accent) 8%, transparent), transparent 38%);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.08);
+}
+
+.metaclaw-feedback__title {
+  font-size: 0.9rem;
 }
 
 @media (max-width: 980px) {
@@ -657,6 +668,10 @@
 
   .metaclaw-panel--notes {
     grid-column: span 1;
+  }
+
+  .metaclaw-feedback {
+    margin-left: 18px;
   }
 }
 

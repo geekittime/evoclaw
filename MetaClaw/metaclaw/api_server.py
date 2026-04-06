@@ -30,6 +30,7 @@ from typing import Any, Optional
 
 import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from openai import OpenAI
 
@@ -791,6 +792,7 @@ class MetaClawAPIServer:
         self._session_context_summaries: dict[str, str] = {}
         self._feedback_by_session: dict[str, list[dict[str, Any]]] = {}
         self._latest_injected_skills: dict[str, list[str]] = {}
+        self._session_skill_selection_file = ""
         self._session_skill_overrides: dict[str, list[str] | None] = {}
         self._user_profiles: dict[str, list[str]] = self._load_user_profiles()
         self._task_briefs: dict[str, dict[str, list[str]]] = self._load_task_briefs()
@@ -859,6 +861,9 @@ class MetaClawAPIServer:
             self._sandbox_whitelist_file = _resolve_record_path(
                 config.record_dir, config.sandbox_whitelist_path,
             )
+            self._session_skill_selection_file = _resolve_record_path(
+                config.record_dir, config.skill_selection_state_path,
+            )
             with open(self._record_file, "a", encoding="utf-8"):
                 pass
             with open(self._openclaw_rl_record_file, "a", encoding="utf-8"):
@@ -888,6 +893,7 @@ class MetaClawAPIServer:
             if self._sandbox_policy is not None:
                 self._sandbox_policy.whitelist_manager = self._sandbox_whitelist
             self._session_context_summaries = self._load_context_summaries()
+            self._session_skill_overrides = self._load_skill_selection_state()
 
         if self.config.feedback_enabled and self.skill_manager is not None:
             self._ensure_important_skill_exists()
@@ -934,6 +940,13 @@ class MetaClawAPIServer:
     def _build_app(self) -> FastAPI:
         app = FastAPI(title="MetaClaw Proxy")
         app.state.owner = self
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_credentials=False,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
 
         @app.get("/healthz")
         async def healthz():
@@ -1333,6 +1346,7 @@ class MetaClawAPIServer:
             skill_names_raw = body.get("skill_names")
             if skill_names_raw is None:
                 owner._session_skill_overrides.pop(session_id, None)
+                owner._save_skill_selection_state()
             elif not isinstance(skill_names_raw, list):
                 raise HTTPException(status_code=400, detail="skill_names must be a list or null")
             else:
@@ -1345,6 +1359,7 @@ class MetaClawAPIServer:
                 owner._session_skill_overrides[session_id] = sorted(
                     name for name in requested if name in known_names
                 )
+                owner._save_skill_selection_state()
             return JSONResponse(content=owner._build_skills_payload(session_id=session_id))
 
         @app.get("/v1/sandbox/pending")
@@ -1717,6 +1732,54 @@ class MetaClawAPIServer:
         except OSError as e:
             logger.warning("[OpenClaw] failed to write task brief file: %s", e)
 
+    def _load_skill_selection_state(self) -> dict[str, list[str] | None]:
+        if not self._session_skill_selection_file:
+            return {}
+        try:
+            with open(self._session_skill_selection_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                return {}
+            normalized: dict[str, list[str] | None] = {}
+            for session_id, selected in data.items():
+                key = str(session_id or "").strip()
+                if not key:
+                    continue
+                if selected is None:
+                    normalized[key] = None
+                    continue
+                if not isinstance(selected, list):
+                    continue
+                normalized[key] = sorted({
+                    str(item or "").strip()
+                    for item in selected
+                    if str(item or "").strip()
+                })
+            return normalized
+        except Exception:
+            return {}
+
+    def _save_skill_selection_state(self) -> None:
+        if not self._session_skill_selection_file:
+            return
+        try:
+            parent = os.path.dirname(self._session_skill_selection_file)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            payload = {
+                session_id: sorted({
+                    str(name or "").strip()
+                    for name in (selected or [])
+                    if str(name or "").strip()
+                })
+                for session_id, selected in self._session_skill_overrides.items()
+                if str(session_id or "").strip() and selected is not None
+            }
+            with open(self._session_skill_selection_file, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+        except OSError as e:
+            logger.warning("[OpenClaw] failed to write skill selection state: %s", e)
+
     def _load_context_summaries(self) -> dict[str, str]:
         path = self._session_context_summary_file
         if not path:
@@ -1823,8 +1886,9 @@ class MetaClawAPIServer:
         session_id: str,
         message: str,
         model: str = "",
+        turn: int | None = None,
     ) -> dict[str, Any]:
-        return {
+        response = {
             "response": {
                 "id": f"chatcmpl-feedback-{int(time.time())}",
                 "object": "chat.completion",
@@ -1846,6 +1910,9 @@ class MetaClawAPIServer:
                 },
             }
         }
+        if turn is not None:
+            self._attach_turn_metadata(response, turn)
+        return response
 
     def _build_assistant_response(
         self,
@@ -1855,6 +1922,7 @@ class MetaClawAPIServer:
         tool_calls: list[dict] | None = None,
         finish_reason: str = "stop",
         extra: dict[str, Any] | None = None,
+        turn: int | None = None,
     ) -> dict[str, Any]:
         response = {
             "response": {
@@ -1883,7 +1951,24 @@ class MetaClawAPIServer:
             response["response"]["choices"][0]["finish_reason"] = "tool_calls"
         if extra:
             response["response"].update(extra)
+        if turn is not None:
+            self._attach_turn_metadata(response, turn)
         return response
+
+    @staticmethod
+    def _attach_turn_metadata(result: dict[str, Any], turn: int) -> None:
+        try:
+            response = result.get("response", {})
+            response["turn"] = turn
+            choices = response.get("choices", [])
+            if not isinstance(choices, list) or not choices:
+                return
+            message = choices[0].get("message", {})
+            if isinstance(message, dict):
+                message["turn"] = turn
+                message["metaclaw_turn"] = turn
+        except Exception:
+            return
 
     def _append_sandbox_audit(self, event_type: str, **payload: Any) -> None:
         if self._sandbox_audit is None:
@@ -1954,6 +2039,7 @@ class MetaClawAPIServer:
                 tool_calls=tool_calls,
                 finish_reason="tool_calls",
                 extra={"approval_id": record.get("approval_id", "")},
+                turn=turn_num,
             )
         record = self._sandbox_approvals.reject(session_id, approval_id)
         if record is None:
@@ -2360,6 +2446,7 @@ class MetaClawAPIServer:
                 session_id=session_id,
                 message=ack,
                 model=str(body.get("model", "") or self._served_model),
+                turn=None,
             )
         rewritten = 0
         for msg in messages:
@@ -2534,6 +2621,7 @@ class MetaClawAPIServer:
                     session_id, turn_num, messages,
                     prompt_text_simple, response_text_simple, tool_calls,
                 )
+                self._attach_turn_metadata({"response": output}, turn_num)
                 if sandbox_decisions:
                     self._attach_pending_record_metadata(
                         session_id,
@@ -2641,6 +2729,7 @@ class MetaClawAPIServer:
                 session_id, turn_num, len(prompt_ids), len(response_ids),
             )
             self._buffer_record(session_id, turn_num, messages, prompt_text, response_text, tool_calls)
+            self._attach_turn_metadata({"response": output}, turn_num)
             if sandbox_decisions:
                 self._attach_pending_record_metadata(
                     session_id,
@@ -2971,10 +3060,19 @@ class MetaClawAPIServer:
         return items
 
     def _get_effective_skill_selection(self, session_id: str) -> tuple[bool, set[str]]:
+        known_names = {
+            str(item.get("name", "")).strip()
+            for item in self._list_all_skills()
+            if str(item.get("name", "")).strip()
+        }
         selected = self._session_skill_overrides.get(session_id)
         if selected is None:
-            return False, {str(item.get("name", "")).strip() for item in self._list_all_skills() if str(item.get("name", "")).strip()}
-        return True, {str(name or "").strip() for name in selected if str(name or "").strip()}
+            return False, known_names
+        return True, {
+            str(name or "").strip()
+            for name in selected
+            if str(name or "").strip() in known_names
+        }
 
     def _filter_skills_for_session(self, skills: list[dict], session_id: str) -> list[dict]:
         if not session_id:

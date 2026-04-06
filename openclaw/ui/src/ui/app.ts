@@ -442,6 +442,7 @@ export class OpenClawApp extends LitElement {
   @state() metaclawPendingApprovals: MetaclawPendingApproval[] = [];
   @state() metaclawSandboxPolicy: MetaclawSandboxPolicy | null = null;
   private metaclawPollInterval: number | null = null;
+  private metaclawRefreshTimer: number | null = null;
 
   @state() healthLoading = false;
   @state() healthResult: HealthSummary | null = null;
@@ -526,10 +527,10 @@ export class OpenClawApp extends LitElement {
     };
     document.addEventListener("keydown", this.globalKeydownHandler);
     handleConnected(this as unknown as Parameters<typeof handleConnected>[0]);
-    void loadMetaclawState(this);
+    this.scheduleMetaclawRefresh(0);
     if (this.metaclawPollInterval == null) {
       this.metaclawPollInterval = window.setInterval(() => {
-        void loadMetaclawState(this);
+        this.scheduleMetaclawRefresh(0);
       }, 10000);
     }
   }
@@ -545,6 +546,10 @@ export class OpenClawApp extends LitElement {
       window.clearInterval(this.metaclawPollInterval);
       this.metaclawPollInterval = null;
     }
+    if (this.metaclawRefreshTimer != null) {
+      window.clearTimeout(this.metaclawRefreshTimer);
+      this.metaclawRefreshTimer = null;
+    }
     super.disconnectedCallback();
   }
 
@@ -554,7 +559,7 @@ export class OpenClawApp extends LitElement {
       changed.has("sessionKey") ||
       (changed.has("chatMessages") && Array.isArray(this.chatMessages) && this.chatMessages.length > 0)
     ) {
-      void loadMetaclawState(this);
+      this.scheduleMetaclawRefresh(changed.has("sessionKey") ? 0 : 250);
     }
     if (changed.has("metaclawApiBase") || changed.has("metaclawToken")) {
       persistMetaclawSettings({
@@ -810,5 +815,20 @@ export class OpenClawApp extends LitElement {
 
   render() {
     return renderApp(this as unknown as AppViewState);
+  }
+
+  scheduleMetaclawRefresh(delayMs = 0) {
+    if (this.metaclawRefreshTimer != null) {
+      window.clearTimeout(this.metaclawRefreshTimer);
+      this.metaclawRefreshTimer = null;
+    }
+    this.metaclawRefreshTimer = window.setTimeout(() => {
+      this.metaclawRefreshTimer = null;
+      if (this.metaclawLoading || this.metaclawSaving) {
+        this.scheduleMetaclawRefresh(300);
+        return;
+      }
+      void loadMetaclawState(this);
+    }, Math.max(0, delayMs));
   }
 }
