@@ -31,7 +31,11 @@ import {
   saveAgentsConfig,
 } from "./controllers/agents.ts";
 import { loadChannels } from "./controllers/channels.ts";
-import { loadChatHistory } from "./controllers/chat.ts";
+import {
+  loadChatHistory,
+  METACLAW_APPROVAL_SOURCE_TOOL,
+  sendHiddenSystemChatMessage,
+} from "./controllers/chat.ts";
 import {
   applyConfig,
   ensureAgentConfigEntry,
@@ -81,7 +85,6 @@ import {
   addMetaclawWhitelistEntry,
   loadMetaclawState,
   removeMetaclawWhitelistEntry,
-  resolveMetaclawApproval,
   saveMetaclawSandboxPolicy,
   saveMetaclawSkillSelection,
   submitMetaclawFeedback,
@@ -1567,20 +1570,26 @@ export function renderApp(state: AppViewState) {
                 onApiBaseChange: (value) => (state.metaclawApiBase = value),
                 onTokenChange: (value) => (state.metaclawToken = value),
                 onRefresh: () => loadMetaclawState(state),
-                onApprove: (approvalId) =>
-                  resolveMetaclawApproval(
-                    state,
-                    approvalId,
-                    "approve",
-                    buildMetaclawFallbackSessionIds(state),
-                  ),
-                onReject: (approvalId) =>
-                  resolveMetaclawApproval(
-                    state,
-                    approvalId,
-                    "reject",
-                    buildMetaclawFallbackSessionIds(state),
-                  ),
+                onApprove: async (approvalId) => {
+                  await sendHiddenSystemChatMessage(state, `approve ${approvalId}`, {
+                    sourceTool: METACLAW_APPROVAL_SOURCE_TOOL,
+                    sourceSessionKey: state.sessionKey,
+                    appendAssistantErrorOnFailure: false,
+                  });
+                  state.metaclawPendingApprovals = state.metaclawPendingApprovals.filter(
+                    (item) => item.approval_id !== approvalId,
+                  );
+                },
+                onReject: async (approvalId) => {
+                  await sendHiddenSystemChatMessage(state, `reject ${approvalId}`, {
+                    sourceTool: METACLAW_APPROVAL_SOURCE_TOOL,
+                    sourceSessionKey: state.sessionKey,
+                    appendAssistantErrorOnFailure: false,
+                  });
+                  state.metaclawPendingApprovals = state.metaclawPendingApprovals.filter(
+                    (item) => item.approval_id !== approvalId,
+                  );
+                },
                 onSavePolicy: (policy) => saveMetaclawSandboxPolicy(state, policy),
                 onAddWhitelistEntry: (type, value) => addMetaclawWhitelistEntry(state, type, value),
                 onRemoveWhitelistEntry: (type, value) =>

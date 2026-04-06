@@ -1,4 +1,8 @@
 import { formatRawAssistantErrorForUi } from "../../../../src/shared/assistant-error-format.js";
+import {
+  normalizeInputProvenance,
+  type InputProvenance,
+} from "../../../../src/sessions/input-provenance.js";
 import { resetToolStream } from "../app-tool-stream.ts";
 import { extractText } from "../chat/message-extract.ts";
 import { formatConnectError } from "../connect-error.ts";
@@ -11,6 +15,7 @@ import {
 } from "./scope-errors.ts";
 
 const SILENT_REPLY_PATTERN = /^\s*NO_REPLY\s*$/;
+export const METACLAW_APPROVAL_SOURCE_TOOL = "metaclaw-approval";
 
 function isSilentReplyStream(text: string): boolean {
   return SILENT_REPLY_PATTERN.test(text);
@@ -31,6 +36,21 @@ function isAssistantSilentReply(message: unknown): boolean {
   }
   const text = extractText(message);
   return typeof text === "string" && isSilentReplyStream(text);
+}
+
+function isHiddenInternalSystemMessage(message: unknown): boolean {
+  if (!message || typeof message !== "object") {
+    return false;
+  }
+  const entry = message as Record<string, unknown>;
+  if (entry.role !== "user") {
+    return false;
+  }
+  const provenance = normalizeInputProvenance(entry.provenance);
+  return (
+    provenance?.kind === "internal_system" &&
+    provenance.sourceTool === METACLAW_APPROVAL_SOURCE_TOOL
+  );
 }
 
 export type ChatState = {
@@ -84,7 +104,9 @@ export async function loadChatHistory(state: ChatState) {
       },
     );
     const messages = Array.isArray(res.messages) ? res.messages : [];
-    state.chatMessages = messages.filter((message) => !isAssistantSilentReply(message));
+    state.chatMessages = messages.filter(
+      (message) => !isAssistantSilentReply(message) && !isHiddenInternalSystemMessage(message),
+    );
     state.chatThinkingLevel = res.thinkingLevel ?? null;
     // Clear all streaming state — history includes tool results and text
     // inline, so keeping streaming artifacts would cause duplicates.
@@ -101,6 +123,68 @@ export async function loadChatHistory(state: ChatState) {
     }
   } finally {
     state.chatLoading = false;
+  }
+}
+
+export async function sendHiddenSystemChatMessage(
+  state: ChatState,
+  message: string,
+  opts: {
+    sourceTool: string;
+    sourceSessionKey?: string;
+    appendAssistantErrorOnFailure?: boolean;
+  },
+): Promise<string> {
+  if (!state.client || !state.connected) {
+    throw new Error("Gateway is not connected.");
+  }
+  const trimmed = message.trim();
+  if (!trimmed) {
+    throw new Error("Hidden system message is empty.");
+  }
+
+  const now = Date.now();
+  const runId = generateUUID();
+  state.chatSending = true;
+  state.lastError = null;
+  state.chatRunId = runId;
+  state.chatStream = "";
+  state.chatStreamStartedAt = now;
+
+  const systemInputProvenance: InputProvenance = {
+    kind: "internal_system",
+    sourceTool: opts.sourceTool,
+    sourceSessionKey: opts.sourceSessionKey ?? state.sessionKey,
+  };
+
+  try {
+    await state.client.request("chat.send", {
+      sessionKey: state.sessionKey,
+      message: trimmed,
+      deliver: false,
+      idempotencyKey: runId,
+      systemInputProvenance,
+    });
+    return runId;
+  } catch (err) {
+    const error = formatConnectError(err);
+    state.chatRunId = null;
+    state.chatStream = null;
+    state.chatStreamStartedAt = null;
+    state.lastError = error;
+    if (opts.appendAssistantErrorOnFailure !== false) {
+      state.chatMessages = [
+        ...state.chatMessages,
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "Error: " + error }],
+          timestamp: Date.now(),
+        },
+      ];
+    }
+    throw new Error(error);
+  } finally {
+    state.chatSending = false;
   }
 }
 

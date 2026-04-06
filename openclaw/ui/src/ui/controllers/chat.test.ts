@@ -4,7 +4,9 @@ import {
   abortChatRun,
   handleChatEvent,
   loadChatHistory,
+  METACLAW_APPROVAL_SOURCE_TOOL,
   sendChatMessage,
+  sendHiddenSystemChatMessage,
   type ChatEventPayload,
   type ChatState,
 } from "./chat.ts";
@@ -647,6 +649,32 @@ describe("loadChatHistory", () => {
     expect(state.chatMessages).toHaveLength(1);
     expect(state.chatMessages[0]).toEqual(messages[0]);
   });
+
+  it("filters hidden internal MetaClaw approval user messages from history", async () => {
+    const messages = [
+      {
+        role: "user",
+        content: "approve appr_505b16cb41c5",
+        provenance: {
+          kind: "internal_system",
+          sourceTool: METACLAW_APPROVAL_SOURCE_TOOL,
+          sourceSessionKey: "agent:main:main",
+        },
+      },
+      { role: "assistant", content: [{ type: "text", text: "Approved and continuing." }] },
+    ];
+    const mockClient = {
+      request: vi.fn().mockResolvedValue({ messages }),
+    };
+    const state = createState({
+      client: mockClient as unknown as ChatState["client"],
+      connected: true,
+    });
+
+    await loadChatHistory(state);
+
+    expect(state.chatMessages).toEqual([messages[1]]);
+  });
 });
 
 describe("sendChatMessage", () => {
@@ -675,6 +703,37 @@ describe("sendChatMessage", () => {
           text: expect.stringContaining("origin not allowed"),
         },
       ],
+    });
+  });
+
+  it("sends hidden internal MetaClaw approval messages without appending a visible user turn", async () => {
+    const request = vi.fn().mockResolvedValue({ runId: "run-approve", status: "started" });
+    const state = createState({
+      connected: true,
+      client: { request } as unknown as ChatState["client"],
+      sessionKey: "agent:main:main",
+    });
+
+    const runId = await sendHiddenSystemChatMessage(state, "approve appr_505b16cb41c5", {
+      sourceTool: METACLAW_APPROVAL_SOURCE_TOOL,
+      sourceSessionKey: "agent:main:main",
+      appendAssistantErrorOnFailure: false,
+    });
+
+    expect(runId).toBeTruthy();
+    expect(state.chatMessages).toEqual([]);
+    expect(state.chatRunId).toBe(runId);
+    expect(state.chatStream).toBe("");
+    expect(request).toHaveBeenCalledWith("chat.send", {
+      sessionKey: "agent:main:main",
+      message: "approve appr_505b16cb41c5",
+      deliver: false,
+      idempotencyKey: runId,
+      systemInputProvenance: {
+        kind: "internal_system",
+        sourceTool: METACLAW_APPROVAL_SOURCE_TOOL,
+        sourceSessionKey: "agent:main:main",
+      },
     });
   });
 });
