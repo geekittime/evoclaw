@@ -1,3 +1,6 @@
+import { CONTROL_UI_METACLAW_PROXY_PREFIX } from "../../../../src/gateway/control-ui-contract.js";
+import { inferBasePathFromPathname, normalizeBasePath } from "../navigation.ts";
+
 type MetaclawSettings = {
   apiBase: string;
   token: string;
@@ -77,9 +80,18 @@ export type MetaclawState = {
 const SETTINGS_KEY = "openclaw.control.metaclaw.v1";
 
 function defaultApiBase() {
-  const protocol = typeof window !== "undefined" && window.location.protocol === "https:" ? "https" : "http";
-  const hostname = typeof window !== "undefined" ? window.location.hostname : "localhost";
-  return `${protocol}://${hostname}:30000`;
+  return "http://127.0.0.1:30000";
+}
+
+function resolveProxyBase() {
+  if (typeof window === "undefined") {
+    return CONTROL_UI_METACLAW_PROXY_PREFIX;
+  }
+  const basePath = normalizeBasePath(inferBasePathFromPathname(window.location.pathname));
+  const proxyPath = basePath
+    ? `${basePath}${CONTROL_UI_METACLAW_PROXY_PREFIX}`
+    : CONTROL_UI_METACLAW_PROXY_PREFIX;
+  return `${window.location.origin}${proxyPath}`;
 }
 
 export function loadMetaclawSettings(): MetaclawSettings {
@@ -117,18 +129,20 @@ async function metaclawRequest<T>(
   path: string,
   init?: RequestInit,
 ): Promise<T> {
-  const apiBase = normalizeBase(state.metaclawApiBase);
-  if (!apiBase) {
+  const upstreamBase = normalizeBase(state.metaclawApiBase);
+  if (!upstreamBase) {
     throw new Error("MetaClaw API URL is empty");
   }
   const headers = new Headers(init?.headers);
   headers.set("Content-Type", "application/json");
+  headers.set("X-OpenClaw-MetaClaw-Upstream", upstreamBase);
   if (state.metaclawToken.trim()) {
     headers.set("Authorization", `Bearer ${state.metaclawToken.trim()}`);
   }
-  const response = await fetch(`${apiBase}${path}`, {
+  const response = await fetch(`${resolveProxyBase()}${path}`, {
     ...init,
     headers,
+    credentials: "same-origin",
   });
   if (!response.ok) {
     const text = await response.text();

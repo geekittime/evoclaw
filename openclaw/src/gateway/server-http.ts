@@ -34,6 +34,7 @@ import {
   handleControlUiHttpRequest,
   type ControlUiRootState,
 } from "./control-ui.js";
+import { handleControlUiMetaclawProxyRequest } from "./control-ui-metaclaw-proxy.js";
 import { handleOpenAiEmbeddingsHttpRequest } from "./embeddings-http.js";
 import { applyHookMappings } from "./hooks-mapping.js";
 import {
@@ -982,6 +983,13 @@ export function createGatewayHttpServer(opts: {
       );
 
       if (controlUiEnabled) {
+        requestStages.push({
+          name: "control-ui-metaclaw-proxy",
+          run: () =>
+            handleControlUiMetaclawProxyRequest(req, res, {
+              basePath: controlUiBasePath,
+            }),
+        });
         requestStages.push({
           name: "control-ui-avatar",
           run: () =>
