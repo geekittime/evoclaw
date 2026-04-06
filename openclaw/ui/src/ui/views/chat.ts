@@ -35,8 +35,14 @@ import { detectTextDirection } from "../text-direction.ts";
 import type { GatewaySessionRow, SessionsListResult } from "../types.ts";
 import type { ChatItem, MessageGroup } from "../types/chat-types.ts";
 import type { ChatAttachment, ChatQueueItem } from "../ui-types.ts";
-import type { MetaclawFeedbackResponse } from "../controllers/metaclaw.ts";
 import { agentLogoUrl, resolveAgentAvatarUrl } from "./agents-utils.ts";
+import {
+  createChatMetaclawViewState,
+  renderAssistantFeedback,
+  renderMetaclawStudio,
+  resetChatMetaclawViewState,
+  type ChatMetaclawProps,
+} from "./chat-metaclaw.ts";
 import { renderMarkdownSidebar } from "./markdown-sidebar.ts";
 import "../components/resizable-divider.ts";
 
@@ -98,51 +104,7 @@ export type ChatProps = {
   onSplitRatioChange?: (ratio: number) => void;
   onChatScroll?: (event: Event) => void;
   basePath?: string;
-  metaclaw?: {
-    apiBase: string;
-    token: string;
-    loading: boolean;
-    saving: boolean;
-    connected: boolean;
-    error: string | null;
-    pendingApprovals: Array<{
-      approval_id: string;
-      created_at: string;
-      decisions?: Array<{ tool_name?: string; command?: string; reason?: string; action?: string }>;
-    }>;
-    sandboxPolicy: {
-      command_allowlist: string[];
-      path_allowlist: string[];
-      command_rules: Record<string, "allow" | "ask" | "deny">;
-      default_command_mode: "allow" | "ask" | "deny";
-      path_blocklist: string[];
-    } | null;
-    skills: Array<{ name: string; description: string; category: string }>;
-    selectedSkillNames: string[];
-    selectionCustomized: boolean;
-    latestInjectedSkills: string[];
-    importantNotes: { name: string; description: string; content: string } | null;
-    onApiBaseChange: (value: string) => void;
-    onTokenChange: (value: string) => void;
-    onRefresh: () => void;
-    onApprove: (approvalId: string) => void;
-    onReject: (approvalId: string) => void;
-    onSavePolicy: (policy: {
-      command_allowlist: string[];
-      path_allowlist: string[];
-      command_rules: Record<string, "allow" | "ask" | "deny">;
-      default_command_mode: "allow" | "ask" | "deny";
-      path_blocklist: string[];
-    }) => void;
-    onAddWhitelistEntry: (type: "command" | "path", value: string) => void;
-    onRemoveWhitelistEntry: (type: "command" | "path", value: string) => void;
-    onSaveSkillSelection: (skillNames: string[] | null) => void;
-    onSubmitFeedback: (
-      turn: number | null,
-      rating: "good" | "bad",
-      feedback: string,
-    ) => Promise<MetaclawFeedbackResponse>;
-  };
+  metaclaw?: ChatMetaclawProps;
 };
 
 const COMPACTION_TOAST_DURATION_MS = 5000;
@@ -185,16 +147,6 @@ interface ChatEphemeralState {
   searchOpen: boolean;
   searchQuery: string;
   pinnedExpanded: boolean;
-  feedbackTargetTurn: number | null;
-  feedbackRating: "good" | "bad";
-  feedbackText: string;
-  feedbackSaving: boolean;
-  feedbackMessage: string;
-  metaclawRuleCommand: string;
-  metaclawRuleMode: "allow" | "ask" | "deny";
-  metaclawWhitelistCommand: string;
-  metaclawWhitelistPath: string;
-  metaclawBlockedPath: string;
 }
 
 function createChatEphemeralState(): ChatEphemeralState {
@@ -210,20 +162,11 @@ function createChatEphemeralState(): ChatEphemeralState {
     searchOpen: false,
     searchQuery: "",
     pinnedExpanded: false,
-    feedbackTargetTurn: null,
-    feedbackRating: "good",
-    feedbackText: "",
-    feedbackSaving: false,
-    feedbackMessage: "",
-    metaclawRuleCommand: "",
-    metaclawRuleMode: "ask",
-    metaclawWhitelistCommand: "",
-    metaclawWhitelistPath: "",
-    metaclawBlockedPath: "",
   };
 }
 
 const vs = createChatEphemeralState();
+const metaclawVs = createChatMetaclawViewState();
 
 /**
  * Reset chat view ephemeral state when navigating away.
@@ -234,6 +177,7 @@ export function resetChatViewState() {
     stopStt();
   }
   Object.assign(vs, createChatEphemeralState());
+  resetChatMetaclawViewState(metaclawVs);
 }
 
 export const cleanupChatModuleState = resetChatViewState;
@@ -707,17 +651,15 @@ function renderWelcomeState(props: ChatProps): TemplateResult {
   return html`
     <div class="agent-chat__welcome" style="--agent-color: var(--accent)">
       <div class="agent-chat__welcome-glow"></div>
-      ${
-        avatar
-          ? html`<img
+      ${avatar
+        ? html`<img
             src=${avatar}
             alt=${name}
             style="width:56px; height:56px; border-radius:50%; object-fit:cover;"
           />`
-          : html`<div class="agent-chat__avatar agent-chat__avatar--logo">
+        : html`<div class="agent-chat__avatar agent-chat__avatar--logo">
             <img src=${logoUrl} alt="OpenClaw" />
-          </div>`
-      }
+          </div>`}
       <h2>${name}</h2>
       <div class="agent-chat__badges">
         <span class="agent-chat__badge"><img src=${logoUrl} alt="" /> Ready to chat</span>
@@ -739,356 +681,6 @@ function renderWelcomeState(props: ChatProps): TemplateResult {
           `,
         )}
       </div>
-    </div>
-  `;
-}
-
-function renderMetaclawStudio(props: ChatProps, requestUpdate: () => void): TemplateResult | typeof nothing {
-  const state = props.metaclaw;
-  if (!state) {
-    return nothing;
-  }
-  const policy = state.sandboxPolicy;
-  const commandRules = policy ? Object.entries(policy.command_rules) : [];
-  const selected = new Set(
-    state.selectionCustomized ? state.selectedSkillNames : state.skills.map((skill) => skill.name),
-  );
-  const pendingCount = state.pendingApprovals.length;
-  const allowCount = commandRules.filter(([, mode]) => mode === "allow").length;
-  const askCount = commandRules.filter(([, mode]) => mode === "ask").length;
-  const denyCount = commandRules.filter(([, mode]) => mode === "deny").length;
-  return html`
-    <section class="metaclaw-studio">
-      <div class="metaclaw-studio__hero">
-        <div>
-          <div class="metaclaw-studio__eyebrow">MetaClaw Studio</div>
-          <div class="metaclaw-studio__title">Feedback, sandbox approvals, skills, and notes</div>
-        </div>
-        <button class="btn btn--ghost" type="button" ?disabled=${state.loading || state.saving} @click=${state.onRefresh}>
-          ${icons.refresh} Refresh
-        </button>
-      </div>
-      <div class="metaclaw-summary">
-        <div class="metaclaw-summary__card ${state.connected ? "is-ok" : "is-warn"}">
-          <strong>${state.connected ? "API online" : "API offline"}</strong>
-          <span>${state.connected ? "MetaClaw frontend features are live." : "Check the API URL, token, or CORS reachability."}</span>
-        </div>
-        <div class="metaclaw-summary__card ${pendingCount ? "is-warn" : "is-ok"}">
-          <strong>${pendingCount}</strong>
-          <span>${pendingCount ? "Command requests are waiting for your decision." : "No commands are waiting for approval."}</span>
-        </div>
-        <div class="metaclaw-summary__card">
-          <strong>${state.selectionCustomized ? state.selectedSkillNames.length : state.skills.length}/${state.skills.length}</strong>
-          <span>${state.selectionCustomized ? "Skills explicitly selected for this session." : "All available skills are active by default."}</span>
-        </div>
-      </div>
-      <div class="metaclaw-studio__grid">
-        <div class="metaclaw-panel">
-          <div class="metaclaw-panel__title">Connection</div>
-          <input class="input" .value=${state.apiBase} @input=${(e: Event) => state.onApiBaseChange((e.target as HTMLInputElement).value)} placeholder="http://localhost:30000" />
-          <input class="input" .value=${state.token} @input=${(e: Event) => state.onTokenChange((e.target as HTMLInputElement).value)} placeholder="Bearer token (optional)" />
-          <div class="metaclaw-status ${state.connected ? "ok" : "warn"}">${state.connected ? "Connected" : "Unavailable"}</div>
-          ${state.error ? html`<div class="callout danger">${state.error}</div>` : nothing}
-        </div>
-        <div class="metaclaw-panel">
-          <div class="metaclaw-panel__title">Pending Approvals</div>
-          ${state.pendingApprovals.length === 0
-            ? html`<div class="muted">No pending command approvals for this session.</div>`
-            : state.pendingApprovals.map((item) => html`
-                <div class="metaclaw-approval">
-                  <div class="metaclaw-approval__head">
-                    <span class="mono">${item.approval_id}</span>
-                    <span class="muted">${item.created_at}</span>
-                  </div>
-                  ${(item.decisions ?? []).map((decision) => html`
-                    <div class="metaclaw-approval__row">
-                      <strong>${decision.tool_name ?? "tool"}</strong>
-                      <span class="mono">${decision.command ?? ""}</span>
-                      <span class="muted">${decision.reason ?? decision.action ?? ""}</span>
-                    </div>
-                  `)}
-                  <div class="metaclaw-approval__actions">
-                    <button class="btn primary" type="button" ?disabled=${state.saving} @click=${() => state.onApprove(item.approval_id)}>Approve</button>
-                    <button class="btn danger" type="button" ?disabled=${state.saving} @click=${() => state.onReject(item.approval_id)}>Reject</button>
-                  </div>
-                </div>
-              `)}
-        </div>
-        <div class="metaclaw-panel">
-          <div class="metaclaw-panel__title">Command Policy</div>
-          ${policy
-            ? html`
-                <label class="field">
-                  <span>Default command mode</span>
-                  <select
-                    .value=${policy.default_command_mode}
-                    @change=${(e: Event) =>
-                      state.onSavePolicy({
-                        ...policy,
-                        default_command_mode: (e.target as HTMLSelectElement).value as "allow" | "ask" | "deny",
-                      })}
-                  >
-                    <option value="allow">Allow</option>
-                    <option value="ask">Ask</option>
-                    <option value="deny">Deny</option>
-                  </select>
-                </label>
-                <div class="metaclaw-chip-group">
-                  <span class="chip">${allowCount} allow</span>
-                  <span class="chip">${askCount} ask</span>
-                  <span class="chip chip--danger">${denyCount} deny</span>
-                </div>
-                <div class="metaclaw-rule-list">
-                  ${commandRules.map(([command, mode]) => html`
-                    <div class="metaclaw-rule-row">
-                      <span class="mono">${command}</span>
-                      <div class="metaclaw-rule-row__actions">
-                        <select
-                          .value=${mode}
-                          @change=${(e: Event) => {
-                            const nextMode = (e.target as HTMLSelectElement).value as "allow" | "ask" | "deny";
-                            state.onSavePolicy({ ...policy, command_rules: { ...policy.command_rules, [command]: nextMode } });
-                          }}
-                        >
-                          <option value="allow">Allow</option>
-                          <option value="ask">Ask</option>
-                          <option value="deny">Deny</option>
-                        </select>
-                        <button
-                          class="btn btn--ghost"
-                          type="button"
-                          ?disabled=${state.saving}
-                          @click=${() => {
-                            const nextRules = { ...policy.command_rules };
-                            delete nextRules[command];
-                            state.onSavePolicy({ ...policy, command_rules: nextRules });
-                          }}
-                        >
-                          Remove
-                        </button>
-                      </div>
-                    </div>
-                  `)}
-                </div>
-                <div class="metaclaw-inline-form">
-                  <input class="input" .value=${vs.metaclawRuleCommand} @input=${(e: Event) => { vs.metaclawRuleCommand = (e.target as HTMLInputElement).value; requestUpdate(); }} placeholder="Add command rule, e.g. pwd" />
-                  <select
-                    .value=${vs.metaclawRuleMode}
-                    @change=${(e: Event) => {
-                      vs.metaclawRuleMode = (e.target as HTMLSelectElement).value as "allow" | "ask" | "deny";
-                      requestUpdate();
-                    }}
-                  >
-                    <option value="allow">Allow</option>
-                    <option value="ask">Ask</option>
-                    <option value="deny">Deny</option>
-                  </select>
-                  <button class="btn" type="button" ?disabled=${!vs.metaclawRuleCommand.trim() || state.saving} @click=${() => {
-                    const command = vs.metaclawRuleCommand.trim();
-                    vs.metaclawRuleCommand = "";
-                    requestUpdate();
-                    state.onSavePolicy({ ...policy, command_rules: { ...policy.command_rules, [command]: vs.metaclawRuleMode } });
-                  }}>Save Rule</button>
-                </div>
-              `
-            : html`<div class="muted">Sandbox policy unavailable.</div>`}
-        </div>
-        <div class="metaclaw-panel">
-          <div class="metaclaw-panel__title">Path Access</div>
-          ${policy
-            ? html`
-                <div class="metaclaw-panel__sub">Allowlisted paths stay accessible even when the default path policy is restrictive.</div>
-                <div class="metaclaw-chip-group">
-                  ${policy.path_allowlist.map((path) => html`<button class="chip" type="button" @click=${() => state.onRemoveWhitelistEntry("path", path)}>${path} ${icons.x}</button>`)}
-                </div>
-                <div class="metaclaw-inline-form">
-                  <input class="input" .value=${vs.metaclawWhitelistPath} @input=${(e: Event) => { vs.metaclawWhitelistPath = (e.target as HTMLInputElement).value; requestUpdate(); }} placeholder="Allow path" />
-                  <button class="btn" type="button" ?disabled=${!vs.metaclawWhitelistPath.trim() || state.saving} @click=${() => {
-                    const value = vs.metaclawWhitelistPath.trim();
-                    vs.metaclawWhitelistPath = "";
-                    requestUpdate();
-                    state.onAddWhitelistEntry("path", value);
-                  }}>Allow</button>
-                </div>
-                <div class="metaclaw-chip-group">
-                  ${policy.path_blocklist.map((path) => html`
-                    <button class="chip chip--danger" type="button" @click=${() =>
-                      state.onSavePolicy({
-                        ...policy,
-                        path_blocklist: policy.path_blocklist.filter((item) => item !== path),
-                      })}
-                    >
-                      ${path} ${icons.x}
-                    </button>
-                  `)}
-                </div>
-                <div class="metaclaw-inline-form">
-                  <input class="input" .value=${vs.metaclawBlockedPath} @input=${(e: Event) => { vs.metaclawBlockedPath = (e.target as HTMLInputElement).value; requestUpdate(); }} placeholder="Block path" />
-                  <button class="btn danger" type="button" ?disabled=${!vs.metaclawBlockedPath.trim() || state.saving} @click=${() => {
-                    const value = vs.metaclawBlockedPath.trim();
-                    vs.metaclawBlockedPath = "";
-                    requestUpdate();
-                    state.onSavePolicy({ ...policy, path_blocklist: [...policy.path_blocklist, value] });
-                  }}>Block</button>
-                </div>
-              `
-            : nothing}
-        </div>
-        <div class="metaclaw-panel">
-          <div class="metaclaw-panel__title">Command Allowlist</div>
-          <div class="metaclaw-panel__sub">Use this for commands that should bypass the default ask/deny flow.</div>
-          ${policy
-            ? html`
-                <div class="metaclaw-chip-group">
-                  ${policy.command_allowlist.map((command) => html`<button class="chip" type="button" @click=${() => state.onRemoveWhitelistEntry("command", command)}>${command} ${icons.x}</button>`)}
-                </div>
-                <div class="metaclaw-inline-form">
-                  <input class="input" .value=${vs.metaclawWhitelistCommand} @input=${(e: Event) => { vs.metaclawWhitelistCommand = (e.target as HTMLInputElement).value; requestUpdate(); }} placeholder="Always allow command" />
-                  <button class="btn" type="button" ?disabled=${!vs.metaclawWhitelistCommand.trim() || state.saving} @click=${() => {
-                    const value = vs.metaclawWhitelistCommand.trim();
-                    vs.metaclawWhitelistCommand = "";
-                    requestUpdate();
-                    state.onAddWhitelistEntry("command", value);
-                  }}>Allow</button>
-                </div>
-              `
-            : nothing}
-        </div>
-        <div class="metaclaw-panel">
-          <div class="metaclaw-panel__title">Skills</div>
-          <div class="metaclaw-panel__sub">
-            ${state.selectionCustomized ? "Custom selection" : "All skills enabled by default"}
-            ${state.latestInjectedSkills.length ? html`<span> | Last injected: ${state.latestInjectedSkills.join(", ")}</span>` : nothing}
-          </div>
-          <div class="metaclaw-skill-list">
-            ${state.skills.map((skill) => html`
-              <label class="metaclaw-skill">
-                <input
-                  type="checkbox"
-                  .checked=${selected.has(skill.name)}
-                  @change=${(e: Event) => {
-                    const next = new Set(selected);
-                    if ((e.target as HTMLInputElement).checked) {
-                      next.add(skill.name);
-                    } else {
-                      next.delete(skill.name);
-                    }
-                    state.onSaveSkillSelection([...next]);
-                  }}
-                />
-                <span>
-                  <strong>${skill.name}</strong>
-                  <small>${skill.category}</small>
-                  <span>${skill.description}</span>
-                </span>
-              </label>
-            `)}
-          </div>
-          <div class="metaclaw-approval__actions">
-            <button class="btn" type="button" ?disabled=${state.saving} @click=${() => state.onSaveSkillSelection(null)}>Use All Skills</button>
-            <button class="btn" type="button" ?disabled=${state.saving} @click=${() => state.onSaveSkillSelection([])}>Disable All</button>
-          </div>
-        </div>
-        <div class="metaclaw-panel metaclaw-panel--notes">
-          <div class="metaclaw-panel__title">${state.importantNotes?.name ?? "important-notes"}</div>
-          <div class="metaclaw-panel__sub">${state.importantNotes?.description ?? "Persistent notes distilled from per-answer user feedback."}</div>
-          <pre class="metaclaw-notes">${state.importantNotes?.content ?? "No important notes yet."}</pre>
-        </div>
-      </div>
-    </section>
-  `;
-}
-
-function extractAssistantTurn(group: MessageGroup): number | null {
-  for (let index = group.messages.length - 1; index >= 0; index -= 1) {
-    const message = group.messages[index]?.message as Record<string, unknown> | undefined;
-    const rawTurn = message?.turn ?? message?.metaclaw_turn;
-    if (typeof rawTurn === "number" && Number.isFinite(rawTurn)) {
-      return rawTurn;
-    }
-    if (typeof rawTurn === "string" && rawTurn.trim()) {
-      const parsed = Number(rawTurn);
-      if (Number.isFinite(parsed)) {
-        return parsed;
-      }
-    }
-  }
-  return null;
-}
-
-function renderAssistantFeedback(
-  group: MessageGroup,
-  props: ChatProps,
-  requestUpdate: () => void,
-): TemplateResult | typeof nothing {
-  if (!props.metaclaw || normalizeRoleForGrouping(group.role) !== "assistant") {
-    return nothing;
-  }
-  const turn = extractAssistantTurn(group);
-  if (turn == null) {
-    return nothing;
-  }
-  const isOpen = vs.feedbackTargetTurn === turn;
-  return html`
-    <div class="metaclaw-feedback">
-      <div class="metaclaw-feedback__title">Feedback for answer #${turn}</div>
-      <div class="metaclaw-feedback__actions">
-        <button class="btn ${isOpen && vs.feedbackRating === "good" ? "primary" : ""}" type="button" @click=${() => {
-          vs.feedbackTargetTurn = turn;
-          vs.feedbackRating = "good";
-          vs.feedbackText = "";
-          vs.feedbackMessage = "";
-          requestUpdate();
-        }}>
-          ${icons.check} Good
-        </button>
-        <button class="btn ${isOpen && vs.feedbackRating === "bad" ? "danger" : ""}" type="button" @click=${() => {
-          vs.feedbackTargetTurn = turn;
-          vs.feedbackRating = "bad";
-          vs.feedbackText = "";
-          vs.feedbackMessage = "";
-          requestUpdate();
-        }}>
-          ${icons.x} Bad
-        </button>
-      </div>
-      ${isOpen
-        ? html`
-            <textarea
-              class="metaclaw-feedback__input"
-              .value=${vs.feedbackText}
-              @input=${(e: Event) => {
-                vs.feedbackText = (e.target as HTMLTextAreaElement).value;
-                requestUpdate();
-              }}
-              placeholder="Tell MetaClaw what was good or what should have been done better."
-            ></textarea>
-            <div class="metaclaw-feedback__actions">
-              <button class="btn primary" type="button" ?disabled=${vs.feedbackSaving} @click=${async () => {
-                vs.feedbackSaving = true;
-                vs.feedbackMessage = "";
-                requestUpdate();
-                try {
-                  const result = await props.metaclaw!.onSubmitFeedback(turn, vs.feedbackRating, vs.feedbackText.trim());
-                  vs.feedbackMessage = result.skill_updated
-                    ? `Summarized into ${result.skill_name || "important-notes"}.`
-                    : "Feedback recorded.";
-                  vs.feedbackText = "";
-                } finally {
-                  vs.feedbackSaving = false;
-                  requestUpdate();
-                }
-              }}>Submit</button>
-              <button class="btn" type="button" ?disabled=${vs.feedbackSaving} @click=${() => {
-                vs.feedbackTargetTurn = null;
-                vs.feedbackText = "";
-                vs.feedbackMessage = "";
-                requestUpdate();
-              }}>Cancel</button>
-            </div>
-            ${vs.feedbackMessage ? html`<div class="callout success">${vs.feedbackMessage}</div>` : nothing}
-          `
-        : nothing}
     </div>
   `;
 }
@@ -1158,9 +750,8 @@ function renderPinnedSection(
           >${icons.chevronDown}</span
         >
       </button>
-      ${
-        vs.pinnedExpanded
-          ? html`
+      ${vs.pinnedExpanded
+        ? html`
             <div class="agent-chat__pinned-list">
               ${entries.map(
                 ({ index, text, role }) => html`
@@ -1186,8 +777,7 @@ function renderPinnedSection(
               )}
             </div>
           `
-          : nothing
-      }
+        : nothing}
     </div>
   `;
 }
@@ -1220,11 +810,9 @@ function renderSlashMenu(
                   requestUpdate();
                 }}
               >
-                ${
-                  vs.slashMenuCommand?.icon
-                    ? html`<span class="slash-menu-icon">${icons[vs.slashMenuCommand.icon]}</span>`
-                    : nothing
-                }
+                ${vs.slashMenuCommand?.icon
+                  ? html`<span class="slash-menu-icon">${icons[vs.slashMenuCommand.icon]}</span>`
+                  : nothing}
                 <span class="slash-menu-name">${arg}</span>
                 <span class="slash-menu-desc">/${vs.slashMenuCommand?.name} ${arg}</span>
               </div>
@@ -1266,9 +854,9 @@ function renderSlashMenu(
         ${entries.map(
           ({ cmd, globalIdx }) => html`
             <div
-              class="slash-menu-item ${
-                globalIdx === vs.slashMenuIndex ? "slash-menu-item--active" : ""
-              }"
+              class="slash-menu-item ${globalIdx === vs.slashMenuIndex
+                ? "slash-menu-item--active"
+                : ""}"
               role="option"
               aria-selected=${globalIdx === vs.slashMenuIndex}
               @click=${() => selectSlashCommand(cmd, props, requestUpdate)}
@@ -1281,15 +869,11 @@ function renderSlashMenu(
               <span class="slash-menu-name">/${cmd.name}</span>
               ${cmd.args ? html`<span class="slash-menu-args">${cmd.args}</span>` : nothing}
               <span class="slash-menu-desc">${cmd.description}</span>
-              ${
-                cmd.argOptions?.length
-                  ? html`<span class="slash-menu-badge">${cmd.argOptions.length} options</span>`
-                  : cmd.executeLocal && !cmd.args
-                    ? html`
-                        <span class="slash-menu-badge">instant</span>
-                      `
-                    : nothing
-              }
+              ${cmd.argOptions?.length
+                ? html`<span class="slash-menu-badge">${cmd.argOptions.length} options</span>`
+                : cmd.executeLocal && !cmd.args
+                  ? html` <span class="slash-menu-badge">instant</span> `
+                  : nothing}
             </div>
           `,
         )}
@@ -1369,46 +953,49 @@ export function renderChat(props: ChatProps) {
       @click=${handleCodeBlockCopy}
     >
       <div class="chat-thread-inner">
-        ${
-          props.loading
-            ? html`
-                <div class="chat-loading-skeleton" aria-label="Loading chat">
-                  <div class="chat-line assistant">
-                    <div class="chat-msg">
-                      <div class="chat-bubble">
-                        <div class="skeleton skeleton-line skeleton-line--long" style="margin-bottom: 8px"></div>
-                        <div class="skeleton skeleton-line skeleton-line--medium" style="margin-bottom: 8px"></div>
-                        <div class="skeleton skeleton-line skeleton-line--short"></div>
-                      </div>
-                    </div>
-                  </div>
-                  <div class="chat-line user" style="margin-top: 12px">
-                    <div class="chat-msg">
-                      <div class="chat-bubble">
-                        <div class="skeleton skeleton-line skeleton-line--medium"></div>
-                      </div>
-                    </div>
-                  </div>
-                  <div class="chat-line assistant" style="margin-top: 12px">
-                    <div class="chat-msg">
-                      <div class="chat-bubble">
-                        <div class="skeleton skeleton-line skeleton-line--long" style="margin-bottom: 8px"></div>
-                        <div class="skeleton skeleton-line skeleton-line--short"></div>
-                      </div>
+        ${props.loading
+          ? html`
+              <div class="chat-loading-skeleton" aria-label="Loading chat">
+                <div class="chat-line assistant">
+                  <div class="chat-msg">
+                    <div class="chat-bubble">
+                      <div
+                        class="skeleton skeleton-line skeleton-line--long"
+                        style="margin-bottom: 8px"
+                      ></div>
+                      <div
+                        class="skeleton skeleton-line skeleton-line--medium"
+                        style="margin-bottom: 8px"
+                      ></div>
+                      <div class="skeleton skeleton-line skeleton-line--short"></div>
                     </div>
                   </div>
                 </div>
-              `
-            : nothing
-        }
+                <div class="chat-line user" style="margin-top: 12px">
+                  <div class="chat-msg">
+                    <div class="chat-bubble">
+                      <div class="skeleton skeleton-line skeleton-line--medium"></div>
+                    </div>
+                  </div>
+                </div>
+                <div class="chat-line assistant" style="margin-top: 12px">
+                  <div class="chat-msg">
+                    <div class="chat-bubble">
+                      <div
+                        class="skeleton skeleton-line skeleton-line--long"
+                        style="margin-bottom: 8px"
+                      ></div>
+                      <div class="skeleton skeleton-line skeleton-line--short"></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            `
+          : nothing}
         ${isEmpty && !vs.searchOpen ? renderWelcomeState(props) : nothing}
-        ${
-          isEmpty && vs.searchOpen
-            ? html`
-                <div class="agent-chat__empty">No matching messages</div>
-              `
-            : nothing
-        }
+        ${isEmpty && vs.searchOpen
+          ? html` <div class="agent-chat__empty">No matching messages</div> `
+          : nothing}
         ${repeat(
           chatItems,
           (item) => item.key,
@@ -1452,7 +1039,12 @@ export function renderChat(props: ChatProps) {
                   requestUpdate();
                 },
               });
-              return html`${groupView}${renderAssistantFeedback(item, props, requestUpdate)}`;
+              return html`${groupView}${renderAssistantFeedback(
+                item,
+                props.metaclaw,
+                metaclawVs,
+                requestUpdate,
+              )}`;
             }
             return nothing;
           },
@@ -1587,9 +1179,8 @@ export function renderChat(props: ChatProps) {
     >
       ${props.disabledReason ? html`<div class="callout">${props.disabledReason}</div>` : nothing}
       ${props.error ? html`<div class="callout danger">${props.error}</div>` : nothing}
-      ${
-        props.focusMode
-          ? html`
+      ${props.focusMode
+        ? html`
             <button
               class="chat-focus-exit"
               type="button"
@@ -1600,10 +1191,9 @@ export function renderChat(props: ChatProps) {
               ${icons.x}
             </button>
           `
-          : nothing
-      }
+        : nothing}
       ${renderSearchBar(requestUpdate)} ${renderPinnedSection(props, pinned, requestUpdate)}
-      ${renderMetaclawStudio(props, requestUpdate)}
+      ${renderMetaclawStudio(props.metaclaw, metaclawVs, requestUpdate)}
 
       <div class="chat-split-container ${sidebarOpen ? "chat-split-container--open" : ""}">
         <div
@@ -1613,9 +1203,8 @@ export function renderChat(props: ChatProps) {
           ${thread}
         </div>
 
-        ${
-          sidebarOpen
-            ? html`
+        ${sidebarOpen
+          ? html`
               <resizable-divider
                 .splitRatio=${splitRatio}
                 @resize=${(e: CustomEvent) => props.onSplitRatioChange?.(e.detail.splitRatio)}
@@ -1634,13 +1223,11 @@ export function renderChat(props: ChatProps) {
                 })}
               </div>
             `
-            : nothing
-        }
+          : nothing}
       </div>
 
-      ${
-        props.queue.length
-          ? html`
+      ${props.queue.length
+        ? html`
             <div class="chat-queue" role="status" aria-live="polite">
               <div class="chat-queue__title">Queued (${props.queue.length})</div>
               <div class="chat-queue__list">
@@ -1648,10 +1235,8 @@ export function renderChat(props: ChatProps) {
                   (item) => html`
                     <div class="chat-queue__item">
                       <div class="chat-queue__text">
-                        ${
-                          item.text ||
-                          (item.attachments?.length ? `Image (${item.attachments.length})` : "")
-                        }
+                        ${item.text ||
+                        (item.attachments?.length ? `Image (${item.attachments.length})` : "")}
                       </div>
                       <button
                         class="btn chat-queue__remove"
@@ -1667,20 +1252,17 @@ export function renderChat(props: ChatProps) {
               </div>
             </div>
           `
-          : nothing
-      }
+        : nothing}
       ${renderFallbackIndicator(props.fallbackStatus)}
       ${renderCompactionIndicator(props.compactionStatus)}
       ${renderContextNotice(activeSession, props.sessions?.defaults?.contextTokens ?? null)}
-      ${
-        props.showNewMessages
-          ? html`
+      ${props.showNewMessages
+        ? html`
             <button class="chat-new-messages" type="button" @click=${props.onScrollToBottom}>
               ${icons.arrowDown} New messages
             </button>
           `
-          : nothing
-      }
+        : nothing}
 
       <!-- Input bar -->
       <div class="agent-chat__input">
@@ -1694,11 +1276,9 @@ export function renderChat(props: ChatProps) {
           @change=${(e: Event) => handleFileSelect(e, props)}
         />
 
-        ${
-          vs.sttRecording && vs.sttInterimText
-            ? html`<div class="agent-chat__stt-interim">${vs.sttInterimText}</div>`
-            : nothing
-        }
+        ${vs.sttRecording && vs.sttInterimText
+          ? html`<div class="agent-chat__stt-interim">${vs.sttInterimText}</div>`
+          : nothing}
 
         <textarea
           ${ref((el) => el && adjustTextareaHeight(el as HTMLTextAreaElement))}
@@ -1726,13 +1306,12 @@ export function renderChat(props: ChatProps) {
               ${icons.paperclip}
             </button>
 
-            ${
-              isSttSupported()
-                ? html`
+            ${isSttSupported()
+              ? html`
                   <button
-                    class="agent-chat__input-btn ${
-                      vs.sttRecording ? "agent-chat__input-btn--recording" : ""
-                    }"
+                    class="agent-chat__input-btn ${vs.sttRecording
+                      ? "agent-chat__input-btn--recording"
+                      : ""}"
                     @click=${() => {
                       if (vs.sttRecording) {
                         stopStt();
@@ -1779,17 +1358,15 @@ export function renderChat(props: ChatProps) {
                     ${vs.sttRecording ? icons.micOff : icons.mic}
                   </button>
                 `
-                : nothing
-            }
+              : nothing}
             ${tokens ? html`<span class="agent-chat__token-count">${tokens}</span>` : nothing}
           </div>
 
           <div class="agent-chat__toolbar-right">
             ${nothing /* search hidden for now */}
-            ${
-              canAbort
-                ? nothing
-                : html`
+            ${canAbort
+              ? nothing
+              : html`
                   <button
                     class="btn btn--ghost"
                     @click=${props.onNewSession}
@@ -1798,8 +1375,7 @@ export function renderChat(props: ChatProps) {
                   >
                     ${icons.plus}
                   </button>
-                `
-            }
+                `}
             <button
               class="btn btn--ghost"
               @click=${() => exportMarkdown(props)}
@@ -1810,9 +1386,8 @@ export function renderChat(props: ChatProps) {
               ${icons.download}
             </button>
 
-            ${
-              canAbort && (isBusy || props.sending)
-                ? html`
+            ${canAbort && (isBusy || props.sending)
+              ? html`
                   <button
                     class="chat-send-btn chat-send-btn--stop"
                     @click=${props.onAbort}
@@ -1822,7 +1397,7 @@ export function renderChat(props: ChatProps) {
                     ${icons.stop}
                   </button>
                 `
-                : html`
+              : html`
                   <button
                     class="chat-send-btn"
                     @click=${() => {
@@ -1837,8 +1412,7 @@ export function renderChat(props: ChatProps) {
                   >
                     ${icons.send}
                   </button>
-                `
-            }
+                `}
           </div>
         </div>
       </div>

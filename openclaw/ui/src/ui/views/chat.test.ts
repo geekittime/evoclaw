@@ -221,6 +221,64 @@ function createProps(overrides: Partial<ChatProps> = {}): ChatProps {
   };
 }
 
+function createMetaclawProps(
+  overrides: Partial<NonNullable<ChatProps["metaclaw"]>> = {},
+): NonNullable<ChatProps["metaclaw"]> {
+  return {
+    apiBase: "http://127.0.0.1:30000",
+    token: "",
+    loading: false,
+    saving: false,
+    connected: true,
+    error: null,
+    sections: {
+      skills: { status: "ready", message: null },
+      pendingApprovals: { status: "ready", message: null },
+      sandboxPolicy: { status: "ready", message: null },
+    },
+    pendingApprovals: [],
+    sandboxPolicy: {
+      command_allowlist: ["pwd"],
+      path_allowlist: ["/workspace/tmp"],
+      command_rules: { pwd: "allow" },
+      default_command_mode: "ask",
+      path_blocklist: ["/secret"],
+    },
+    skills: [
+      { name: "security-triage", description: "desc", category: "security" },
+      { name: "openclaw-pr-maintainer", description: "desc", category: "maintainer" },
+    ],
+    selectedSkillNames: ["security-triage"],
+    selectionCustomized: true,
+    latestInjectedSkills: ["security-triage"],
+    importantNotes: {
+      name: "important-notes",
+      description: "Persistent notes",
+      content: "Remember the last user preference.",
+    },
+    onApiBaseChange: () => undefined,
+    onTokenChange: () => undefined,
+    onRefresh: () => undefined,
+    onApprove: () => undefined,
+    onReject: () => undefined,
+    onSavePolicy: () => undefined,
+    onAddWhitelistEntry: () => undefined,
+    onRemoveWhitelistEntry: () => undefined,
+    onSaveSkillSelection: () => undefined,
+    onSubmitFeedback: async () => ({
+      ok: true,
+      session_id: "main",
+      turn: 1,
+      rating: "good",
+      skill_updated: true,
+      skill_name: "important-notes",
+      skill_description: "Persistent notes",
+      skill_content: "Remember the last user preference.",
+    }),
+    ...overrides,
+  };
+}
+
 function createOverviewProps(overrides: Partial<OverviewProps> = {}): OverviewProps {
   return {
     connected: false,
@@ -767,6 +825,48 @@ describe("chat view", () => {
     );
     expect(senderLabels).toContain("Iris");
     expect(senderLabels).toContain("Joaquin De Rojas");
+  });
+
+  it("renders MetaClaw Studio panels from structured session state", () => {
+    const container = document.createElement("div");
+    render(
+      renderChat(
+        createProps({
+          metaclaw: createMetaclawProps(),
+        }),
+      ),
+      container,
+    );
+
+    expect(container.textContent).toContain("MetaClaw Studio");
+    expect(container.textContent).toContain("Pending Approvals");
+    expect(container.textContent).toContain("Command Policy");
+    expect(container.textContent).toContain("important-notes");
+    expect(container.textContent).toContain("Remember the last user preference.");
+  });
+
+  it("renders answer-level MetaClaw feedback buttons next to assistant turns", () => {
+    const container = document.createElement("div");
+    render(
+      renderChat(
+        createProps({
+          metaclaw: createMetaclawProps(),
+          messages: [
+            {
+              role: "assistant",
+              content: "Here is the answer.",
+              turn: 3,
+              timestamp: 1000,
+            },
+          ],
+        }),
+      ),
+      container,
+    );
+
+    expect(container.textContent).toContain("How was answer #3?");
+    expect(container.textContent).toContain("Good");
+    expect(container.textContent).toContain("Bad");
   });
 
   it("opens delete confirm on the left for user messages", () => {

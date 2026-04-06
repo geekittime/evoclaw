@@ -60,14 +60,15 @@ import {
   refreshVisibleToolsEffectiveForCurrentSession as refreshVisibleToolsEffectiveForCurrentSessionInternal,
 } from "./controllers/agents.ts";
 import { loadAssistantIdentity as loadAssistantIdentityInternal } from "./controllers/assistant-identity.ts";
+import type { DevicePairingList } from "./controllers/devices.ts";
+import type { ExecApprovalRequest } from "./controllers/exec-approval.ts";
+import type { ExecApprovalsFile, ExecApprovalsSnapshot } from "./controllers/exec-approvals.ts";
 import {
+  createInitialMetaclawSectionsState,
   loadMetaclawSettings,
   loadMetaclawState,
   persistMetaclawSettings,
 } from "./controllers/metaclaw.ts";
-import type { DevicePairingList } from "./controllers/devices.ts";
-import type { ExecApprovalRequest } from "./controllers/exec-approval.ts";
-import type { ExecApprovalsFile, ExecApprovalsSnapshot } from "./controllers/exec-approvals.ts";
 import type {
   MetaclawImportantNotes,
   MetaclawPendingApproval,
@@ -441,6 +442,7 @@ export class OpenClawApp extends LitElement {
   @state() metaclawImportantNotes: MetaclawImportantNotes | null = null;
   @state() metaclawPendingApprovals: MetaclawPendingApproval[] = [];
   @state() metaclawSandboxPolicy: MetaclawSandboxPolicy | null = null;
+  @state() metaclawSections = createInitialMetaclawSectionsState();
   private metaclawPollInterval: number | null = null;
   private metaclawRefreshTimer: number | null = null;
 
@@ -557,7 +559,9 @@ export class OpenClawApp extends LitElement {
     handleUpdated(this as unknown as Parameters<typeof handleUpdated>[0], changed);
     if (
       changed.has("sessionKey") ||
-      (changed.has("chatMessages") && Array.isArray(this.chatMessages) && this.chatMessages.length > 0)
+      (changed.has("chatMessages") &&
+        Array.isArray(this.chatMessages) &&
+        this.chatMessages.length > 0)
     ) {
       this.scheduleMetaclawRefresh(changed.has("sessionKey") ? 0 : 250);
     }
@@ -822,13 +826,16 @@ export class OpenClawApp extends LitElement {
       window.clearTimeout(this.metaclawRefreshTimer);
       this.metaclawRefreshTimer = null;
     }
-    this.metaclawRefreshTimer = window.setTimeout(() => {
-      this.metaclawRefreshTimer = null;
-      if (this.metaclawLoading || this.metaclawSaving) {
-        this.scheduleMetaclawRefresh(300);
-        return;
-      }
-      void loadMetaclawState(this);
-    }, Math.max(0, delayMs));
+    this.metaclawRefreshTimer = window.setTimeout(
+      () => {
+        this.metaclawRefreshTimer = null;
+        if (this.metaclawLoading || this.metaclawSaving) {
+          this.scheduleMetaclawRefresh(300);
+          return;
+        }
+        void loadMetaclawState(this);
+      },
+      Math.max(0, delayMs),
+    );
   }
 }

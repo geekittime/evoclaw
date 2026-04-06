@@ -7,6 +7,7 @@ import type { ExecApprovalsFile, ExecApprovalsSnapshot } from "./controllers/exe
 import type {
   MetaclawImportantNotes,
   MetaclawPendingApproval,
+  MetaclawSectionsState,
   MetaclawSandboxPolicy,
   MetaclawSkillEntry,
 } from "./controllers/metaclaw.ts";
@@ -119,6 +120,7 @@ export type AppViewState = {
   metaclawImportantNotes: MetaclawImportantNotes | null;
   metaclawPendingApprovals: MetaclawPendingApproval[];
   metaclawSandboxPolicy: MetaclawSandboxPolicy | null;
+  metaclawSections: MetaclawSectionsState;
   pendingGatewayUrl: string | null;
   configLoading: boolean;
   configRaw: string;

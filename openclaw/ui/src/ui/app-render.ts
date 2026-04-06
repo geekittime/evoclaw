@@ -76,6 +76,15 @@ import {
   updateExecApprovalsFormValue,
 } from "./controllers/exec-approvals.ts";
 import { loadLogs } from "./controllers/logs.ts";
+import {
+  addMetaclawWhitelistEntry,
+  loadMetaclawState,
+  removeMetaclawWhitelistEntry,
+  resolveMetaclawApproval,
+  saveMetaclawSandboxPolicy,
+  saveMetaclawSkillSelection,
+  submitMetaclawFeedback,
+} from "./controllers/metaclaw.ts";
 import { loadNodes } from "./controllers/nodes.ts";
 import { loadPresence } from "./controllers/presence.ts";
 import { deleteSessionsAndRefresh, loadSessions, patchSession } from "./controllers/sessions.ts";
@@ -86,15 +95,6 @@ import {
   updateSkillEdit,
   updateSkillEnabled,
 } from "./controllers/skills.ts";
-import {
-  addMetaclawWhitelistEntry,
-  loadMetaclawState,
-  removeMetaclawWhitelistEntry,
-  resolveMetaclawApproval,
-  saveMetaclawSandboxPolicy,
-  saveMetaclawSkillSelection,
-  submitMetaclawFeedback,
-} from "./controllers/metaclaw.ts";
 import "./components/dashboard-header.ts";
 import { buildExternalLinkRel, EXTERNAL_LINK_TARGET } from "./external-link.ts";
 import { icons } from "./icons.ts";
@@ -1543,6 +1543,7 @@ export function renderApp(state: AppViewState) {
                 selectionCustomized: state.metaclawSelectionCustomized,
                 latestInjectedSkills: state.metaclawLatestInjectedSkills,
                 importantNotes: state.metaclawImportantNotes,
+                sections: state.metaclawSections,
                 onApiBaseChange: (value) => (state.metaclawApiBase = value),
                 onTokenChange: (value) => (state.metaclawToken = value),
                 onRefresh: () => loadMetaclawState(state),
