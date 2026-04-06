@@ -1,41 +1,17 @@
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import type { AddressInfo } from "node:net";
-import { afterEach, describe, expect, it } from "vitest";
-import { createGatewayRequest } from "./hooks-test-helpers.js";
-import { createGatewayHttpServer } from "./server-http.js";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 describe("handleControlUiMetaclawProxyRequest", () => {
-  const servers: Array<ReturnType<typeof createServer>> = [];
-
-  afterEach(async () => {
-    await Promise.all(
-      servers.map(
-        (server) =>
-          new Promise<void>((resolve, reject) => {
-            server.closeAllConnections?.();
-            server.close((error) => (error ? reject(error) : resolve()));
-          }),
-      ),
-    );
-    servers.length = 0;
+  afterEach(() => {
+    vi.resetModules();
+    vi.restoreAllMocks();
+    vi.doUnmock("../infra/fetch.js");
   });
 
-  async function startServer(
-    handler: Parameters<typeof createServer>[0],
-  ): Promise<{ server: ReturnType<typeof createServer>; port: number }> {
-    const server = createServer(handler);
-    servers.push(server);
-    await new Promise<void>((resolve, reject) =>
-      server.listen(0, "127.0.0.1", (error?: Error) => (error ? reject(error) : resolve())),
-    );
-    return { server, port: (server.address() as AddressInfo).port };
-  }
-
-  async function dispatchGatewayRequest(
-    server: ReturnType<typeof createGatewayHttpServer>,
+  async function dispatchProxyRequest(
     req: IncomingMessage,
-  ): Promise<{ statusCode: number; headers: Map<string, string>; body: string }> {
-    return await new Promise((resolve, reject) => {
+  ): Promise<{ handled: boolean; statusCode: number; headers: Map<string, string>; body: string }> {
+    return await new Promise(async (resolve, reject) => {
       const headers = new Map<string, string>();
       let body = "";
       const res = {
@@ -53,6 +29,7 @@ describe("handleControlUiMetaclawProxyRequest", () => {
             body = String(chunk);
           }
           resolve({
+            handled: true,
             statusCode: this.statusCode,
             headers,
             body,
@@ -61,23 +38,27 @@ describe("handleControlUiMetaclawProxyRequest", () => {
       } as unknown as ServerResponse;
 
       try {
-        server.emit("request", req, res);
+        const { handleControlUiMetaclawProxyRequest } = await import(
+          "./control-ui-metaclaw-proxy.js"
+        );
+        const handled = await handleControlUiMetaclawProxyRequest(req, res);
+        if (!handled) {
+          resolve({
+            handled: false,
+            statusCode: res.statusCode,
+            headers,
+            body,
+          });
+        }
       } catch (error) {
         reject(error);
       }
     });
   }
 
-  it("proxies MetaClaw requests through the gateway request pipeline", async () => {
-    const upstream = await startServer((req, res) => {
-      if (req.url !== "/v1/skills?session_id=agent%3Amain%3Amain") {
-        res.statusCode = 404;
-        res.end("unexpected path");
-        return;
-      }
-      res.statusCode = 200;
-      res.setHeader("Content-Type", "application/json; charset=utf-8");
-      res.end(
+  it("proxies MetaClaw requests through the control-ui proxy handler", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
         JSON.stringify({
           skills: [],
           selection_customized: false,
@@ -89,30 +70,31 @@ describe("handleControlUiMetaclawProxyRequest", () => {
             content: "",
           },
         }),
-      );
-    });
+        {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json; charset=utf-8",
+          },
+        },
+      ),
+    );
 
-    const gateway = createGatewayHttpServer({
-      canvasHost: null,
-      clients: new Set(),
-      controlUiEnabled: true,
-      controlUiBasePath: "",
-      openAiChatCompletionsEnabled: false,
-      openResponsesEnabled: false,
-      handleHooksRequest: async () => false,
-      resolvedAuth: { mode: "none", allowTailscale: false },
-    });
+    vi.doMock("../infra/fetch.js", () => ({
+      resolveFetch: () => fetchMock,
+    }));
 
-    const req = createGatewayRequest({
+    const req = {
       method: "GET",
-      path: "/__openclaw/metaclaw/v1/skills?session_id=agent%3Amain%3Amain",
+      url: "/__openclaw/metaclaw/v1/skills?session_id=agent%3Amain%3Amain",
       headers: {
-        "x-openclaw-metaclaw-upstream": `http://127.0.0.1:${upstream.port}`,
+        host: "localhost:18789",
+        "x-openclaw-metaclaw-upstream": "http://127.0.0.1:30000",
       },
-    });
+    } as IncomingMessage;
 
-    const response = await dispatchGatewayRequest(gateway, req);
+    const response = await dispatchProxyRequest(req);
 
+    expect(response.handled).toBe(true);
     expect(response.statusCode).toBe(200);
     expect(response.headers.get("content-type")).toContain("application/json");
     expect(JSON.parse(response.body)).toMatchObject({
@@ -120,5 +102,11 @@ describe("handleControlUiMetaclawProxyRequest", () => {
         name: "important-notes",
       },
     });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:30000/v1/skills?session_id=agent%3Amain%3Amain",
+      expect.objectContaining({
+        method: "GET",
+      }),
+    );
   });
 });
