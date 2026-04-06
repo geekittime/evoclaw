@@ -1,3 +1,4 @@
+import { formatRawAssistantErrorForUi } from "../../../../src/shared/assistant-error-format.js";
 import { resetToolStream } from "../app-tool-stream.ts";
 import { extractText } from "../chat/message-extract.ts";
 import { formatConnectError } from "../connect-error.ts";
@@ -160,6 +161,30 @@ function normalizeFinalAssistantMessage(message: unknown): Record<string, unknow
   });
 }
 
+function buildAssistantErrorMessage(errorMessage: string, stopReason: "error" | "aborted") {
+  const trimmed = errorMessage.trim();
+  return {
+    role: "assistant",
+    content: [{ type: "text", text: formatRawAssistantErrorForUi(trimmed) }],
+    errorMessage: trimmed,
+    stopReason,
+    timestamp: Date.now(),
+  };
+}
+
+function appendAssistantErrorMessage(
+  state: ChatState,
+  errorMessage: string | undefined,
+  stopReason: "error" | "aborted",
+) {
+  const trimmed = typeof errorMessage === "string" ? errorMessage.trim() : "";
+  if (!trimmed) {
+    return false;
+  }
+  state.chatMessages = [...state.chatMessages, buildAssistantErrorMessage(trimmed, stopReason)];
+  return true;
+}
+
 export async function sendChatMessage(
   state: ChatState,
   message: string,
@@ -287,6 +312,7 @@ export function handleChatEvent(state: ChatState, payload?: ChatEventPayload) {
         state.chatMessages = [...state.chatMessages, finalMessage];
         return null;
       }
+      appendAssistantErrorMessage(state, payload.errorMessage, "error");
       return "final";
     }
     return null;
@@ -310,6 +336,8 @@ export function handleChatEvent(state: ChatState, payload?: ChatEventPayload) {
           timestamp: Date.now(),
         },
       ];
+    } else {
+      appendAssistantErrorMessage(state, payload.errorMessage, "error");
     }
     state.chatStream = null;
     state.chatRunId = null;
@@ -329,12 +357,15 @@ export function handleChatEvent(state: ChatState, payload?: ChatEventPayload) {
             timestamp: Date.now(),
           },
         ];
+      } else {
+        appendAssistantErrorMessage(state, payload.errorMessage, "aborted");
       }
     }
     state.chatStream = null;
     state.chatRunId = null;
     state.chatStreamStartedAt = null;
   } else if (payload.state === "error") {
+    appendAssistantErrorMessage(state, payload.errorMessage, "error");
     state.chatStream = null;
     state.chatRunId = null;
     state.chatStreamStartedAt = null;

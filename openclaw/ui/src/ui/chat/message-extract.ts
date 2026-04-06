@@ -1,4 +1,5 @@
 import { stripInboundMetadata } from "../../../../src/auto-reply/reply/strip-inbound-meta.js";
+import { formatRawAssistantErrorForUi } from "../../../../src/shared/assistant-error-format.js";
 import { stripEnvelope } from "../../../../src/shared/chat-envelope.js";
 import { stripThinkingTags } from "../format.ts";
 
@@ -20,6 +21,15 @@ export function extractText(message: unknown): string | null {
   const role = typeof m.role === "string" ? m.role : "";
   const raw = extractRawText(message);
   if (!raw) {
+    const stopReason = typeof m.stopReason === "string" ? m.stopReason : "";
+    const errorMessage = typeof m.errorMessage === "string" ? m.errorMessage.trim() : "";
+    if (
+      role.toLowerCase() === "assistant" &&
+      errorMessage &&
+      (stopReason === "error" || stopReason === "aborted" || !Array.isArray(m.content))
+    ) {
+      return formatRawAssistantErrorForUi(errorMessage);
+    }
     return null;
   }
   return processMessageText(raw, role);

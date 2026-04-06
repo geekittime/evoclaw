@@ -165,6 +165,30 @@ describe("handleChatEvent", () => {
     expect(state.chatMessages).toEqual([]);
   });
 
+  it("renders final error text when final has no message but includes errorMessage", () => {
+    const state = createState({
+      sessionKey: "main",
+      chatRunId: "run-1",
+      chatStream: "",
+      chatStreamStartedAt: 100,
+    });
+    const payload: ChatEventPayload = {
+      runId: "run-1",
+      sessionKey: "main",
+      state: "final",
+      errorMessage: '401 {"error":{"message":"Missing scopes: model.request"}}',
+    };
+
+    expect(handleChatEvent(state, payload)).toBe("final");
+    expect(state.chatMessages).toHaveLength(1);
+    expect(state.chatMessages[0]).toMatchObject({
+      role: "assistant",
+      stopReason: "error",
+      errorMessage: '401 {"error":{"message":"Missing scopes: model.request"}}',
+      content: [{ type: "text", text: expect.stringContaining("HTTP 401") }],
+    });
+  });
+
   it("persists streamed text when final event carries no message", () => {
     const existingMessage = {
       role: "user",
@@ -397,6 +421,30 @@ describe("handleChatEvent", () => {
     expect(state.chatMessages).toEqual([existingMessage]);
   });
 
+  it("shows aborted error text when abort has no message or stream", () => {
+    const state = createState({
+      sessionKey: "main",
+      chatRunId: "run-1",
+      chatStream: "",
+      chatStreamStartedAt: 100,
+    });
+    const payload: ChatEventPayload = {
+      runId: "run-1",
+      sessionKey: "main",
+      state: "aborted",
+      errorMessage: "Request was aborted.",
+    };
+
+    expect(handleChatEvent(state, payload)).toBe("aborted");
+    expect(state.chatMessages).toHaveLength(1);
+    expect(state.chatMessages[0]).toMatchObject({
+      role: "assistant",
+      stopReason: "aborted",
+      errorMessage: "Request was aborted.",
+      content: [{ type: "text", text: "Request was aborted." }],
+    });
+  });
+
   it("drops NO_REPLY final payload from another run", () => {
     const state = createActiveStreamingState();
     const payload = createOtherRunNoReplyFinalPayload();
@@ -509,6 +557,31 @@ describe("handleChatEvent", () => {
     expect(handleChatEvent(state, payload)).toBe("final");
     expect(state.chatMessages).toHaveLength(1);
   });
+
+  it("appends an assistant error message for error events", () => {
+    const state = createState({
+      sessionKey: "main",
+      chatRunId: "run-1",
+      chatStream: "partial",
+      chatStreamStartedAt: 100,
+    });
+    const payload: ChatEventPayload = {
+      runId: "run-1",
+      sessionKey: "main",
+      state: "error",
+      errorMessage: "Connection error.",
+    };
+
+    expect(handleChatEvent(state, payload)).toBe("error");
+    expect(state.lastError).toBe("Connection error.");
+    expect(state.chatMessages).toHaveLength(1);
+    expect(state.chatMessages[0]).toMatchObject({
+      role: "assistant",
+      stopReason: "error",
+      errorMessage: "Connection error.",
+      content: [{ type: "text", text: "Connection error." }],
+    });
+  });
 });
 
 describe("loadChatHistory", () => {
@@ -550,6 +623,29 @@ describe("loadChatHistory", () => {
 
     // text takes precedence — "real reply" is NOT silent, so message is kept.
     expect(state.chatMessages).toHaveLength(1);
+  });
+
+  it("keeps assistant error messages from history when content is empty", async () => {
+    const messages = [
+      {
+        role: "assistant",
+        content: [],
+        stopReason: "error",
+        errorMessage: "Connection error.",
+      },
+    ];
+    const mockClient = {
+      request: vi.fn().mockResolvedValue({ messages }),
+    };
+    const state = createState({
+      client: mockClient as unknown as ChatState["client"],
+      connected: true,
+    });
+
+    await loadChatHistory(state);
+
+    expect(state.chatMessages).toHaveLength(1);
+    expect(state.chatMessages[0]).toEqual(messages[0]);
   });
 });
 

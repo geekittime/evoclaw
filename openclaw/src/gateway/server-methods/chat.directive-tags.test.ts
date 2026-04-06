@@ -1827,6 +1827,21 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
           timestamp: expect.any(Number),
         },
       });
+      const assistantUpdate = mockState.emittedTranscriptUpdates.find(
+        (update) =>
+          typeof update.message === "object" &&
+          update.message !== null &&
+          (update.message as { role?: unknown }).role === "assistant",
+      );
+      expect(assistantUpdate).toMatchObject({
+        sessionFile: expect.stringMatching(/sess\.jsonl$/),
+        message: {
+          role: "assistant",
+          provider: "openclaw",
+          model: "gateway-injected",
+          content: [{ type: "text", text: "Error: upstream unavailable" }],
+        },
+      });
     });
   });
 });

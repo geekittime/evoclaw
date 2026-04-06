@@ -19,6 +19,7 @@ import { normalizeInputProvenance, type InputProvenance } from "../../sessions/i
 import { resolveSendPolicy } from "../../sessions/send-policy.js";
 import { parseAgentSessionKey } from "../../sessions/session-key-utils.js";
 import { emitSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
+import { formatRawAssistantErrorForUi } from "../../shared/assistant-error-format.js";
 import {
   stripInlineDirectiveTagsForDisplay,
   stripInlineDirectiveTagsFromMessageForDisplay,
@@ -909,6 +910,31 @@ function appendAssistantTranscriptMessage(params: {
     idempotencyKey: params.idempotencyKey,
     abortMeta: params.abortMeta,
   });
+}
+
+function appendGatewayErrorTranscriptMessage(params: {
+  errorMessage: string;
+  sessionId: string;
+  storePath: string | undefined;
+  sessionFile?: string;
+  agentId?: string;
+  idempotencyKey: string;
+  log: Pick<GatewayRequestContext["logGateway"], "warn">;
+}) {
+  const appended = appendAssistantTranscriptMessage({
+    message: formatRawAssistantErrorForUi(params.errorMessage),
+    sessionId: params.sessionId,
+    storePath: params.storePath,
+    sessionFile: params.sessionFile,
+    agentId: params.agentId,
+    createIfMissing: true,
+    idempotencyKey: params.idempotencyKey,
+  });
+  if (!appended.ok) {
+    params.log.warn(
+      `webchat error transcript append failed: ${appended.error ?? "unknown error"}`,
+    );
+  }
 }
 
 function collectSessionAbortPartials(params: {
@@ -1864,6 +1890,18 @@ export const chatHandlers: GatewayRequestHandlers = {
               `webchat user transcript update failed after error: ${formatForLog(transcriptErr)}`,
             );
           });
+          if (!agentRunStarted) {
+            const { storePath: latestStorePath, entry: latestEntry } = loadSessionEntry(sessionKey);
+            appendGatewayErrorTranscriptMessage({
+              errorMessage: String(err),
+              sessionId: latestEntry?.sessionId ?? entry?.sessionId ?? clientRunId,
+              storePath: latestStorePath,
+              sessionFile: latestEntry?.sessionFile,
+              agentId,
+              idempotencyKey: `${clientRunId}:assistant-error`,
+              log: context.logGateway,
+            });
+          }
           const error = errorShape(ErrorCodes.UNAVAILABLE, String(err));
           setGatewayDedupeEntry({
             dedupe: context.dedupe,
@@ -1890,6 +1928,15 @@ export const chatHandlers: GatewayRequestHandlers = {
           context.chatAbortControllers.delete(clientRunId);
         });
     } catch (err) {
+      appendGatewayErrorTranscriptMessage({
+        errorMessage: String(err),
+        sessionId: entry?.sessionId ?? clientRunId,
+        storePath,
+        sessionFile: entry?.sessionFile,
+        agentId: resolveSessionAgentId({ sessionKey, config: cfg }),
+        idempotencyKey: `${clientRunId}:assistant-error`,
+        log: context.logGateway,
+      });
       const error = errorShape(ErrorCodes.UNAVAILABLE, String(err));
       const payload = {
         runId: clientRunId,
