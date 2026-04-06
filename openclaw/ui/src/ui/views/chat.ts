@@ -41,6 +41,7 @@ import {
   createChatMetaclawViewState,
   renderAssistantFeedback,
   renderMetaclawPendingApprovalsInline,
+  renderMetaclawPendingApprovalPrompt,
   renderMetaclawStudio,
   resetChatMetaclawViewState,
   type ChatMetaclawProps,
@@ -1289,6 +1290,7 @@ export function renderChat(props: ChatProps) {
       ${renderFallbackIndicator(props.fallbackStatus)}
       ${renderCompactionIndicator(props.compactionStatus)}
       ${renderContextNotice(activeSession, props.sessions?.defaults?.contextTokens ?? null)}
+      ${renderMetaclawPendingApprovalPrompt(props.metaclaw)}
       ${props.showNewMessages
         ? html`
             <button class="chat-new-messages" type="button" @click=${props.onScrollToBottom}>

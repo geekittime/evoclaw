@@ -952,6 +952,7 @@ describe("chat view", () => {
       );
 
       expect(container.textContent).toContain("Pending Command Approvals");
+      expect(container.textContent).toContain("MetaClaw approval needed");
       expect(container.textContent).toContain("Approve");
       expect(container.textContent).toContain("Reject");
 

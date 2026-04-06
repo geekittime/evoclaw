@@ -399,6 +399,70 @@ export function renderMetaclawPendingApprovalsInline(
   `;
 }
 
+export function renderMetaclawPendingApprovalPrompt(
+  props: ChatMetaclawProps | undefined,
+): TemplateResult | typeof nothing {
+  if (
+    !props ||
+    props.sections.pendingApprovals.status !== "ready" ||
+    props.pendingApprovals.length === 0
+  ) {
+    return nothing;
+  }
+
+  const active = props.pendingApprovals[props.pendingApprovals.length - 1];
+  const queueCount = props.pendingApprovals.length;
+
+  return html`
+    <div class="exec-approval-overlay" role="dialog" aria-modal="true" aria-live="polite">
+      <div class="exec-approval-card">
+        <div class="exec-approval-header">
+          <div>
+            <div class="exec-approval-title">MetaClaw approval needed</div>
+            <div class="exec-approval-sub">
+              A sandboxed command is waiting for your decision.
+            </div>
+          </div>
+          ${queueCount > 1 ? html`<div class="exec-approval-queue">${queueCount} pending</div>` : nothing}
+        </div>
+        <div class="exec-approval-command mono">${active.approval_id}</div>
+        <div class="metaclaw-approval__body">
+          ${(active.decisions ?? []).map(
+            (decision) => html`
+              <div class="metaclaw-approval__decision">
+                <strong>${decision.tool_name ?? "tool"}</strong>
+                <span class="mono">${decision.command ?? "No command text provided"}</span>
+                ${decision.paths?.length
+                  ? html`<span class="muted">Paths: ${decision.paths.join(", ")}</span>`
+                  : nothing}
+                <span class="muted">${decision.reason ?? decision.action ?? ""}</span>
+              </div>
+            `,
+          )}
+        </div>
+        <div class="exec-approval-actions">
+          <button
+            class="btn primary"
+            type="button"
+            ?disabled=${props.saving}
+            @click=${() => props.onApprove(active.approval_id)}
+          >
+            Approve
+          </button>
+          <button
+            class="btn danger"
+            type="button"
+            ?disabled=${props.saving}
+            @click=${() => props.onReject(active.approval_id)}
+          >
+            Reject
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function renderCommandPolicyPanel(
   props: ChatMetaclawProps,
   viewState: ChatMetaclawViewState,

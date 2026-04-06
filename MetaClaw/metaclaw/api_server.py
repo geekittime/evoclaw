@@ -1377,7 +1377,7 @@ class MetaClawAPIServer:
             if owner._sandbox_approvals is None:
                 raise HTTPException(status_code=503, detail="sandbox approvals are not enabled")
             return JSONResponse(content={
-                "pending": owner._sandbox_approvals.list_pending(session_id=session_id.strip()),
+                "pending": owner._list_pending_approvals_for_session(session_id.strip()),
             })
 
         @app.get("/v1/sandbox/whitelist")
@@ -1516,7 +1516,12 @@ class MetaClawAPIServer:
             approval_id = str(body.get("approval_id", "") or "").strip()
             if not session_id:
                 raise HTTPException(status_code=400, detail="session_id is required")
-            record = owner._sandbox_approvals.approve(session_id, approval_id)
+            record = owner._find_pending_approval_for_session(session_id, approval_id)
+            if record is not None:
+                record = owner._sandbox_approvals.approve(
+                    str(record.get("session_id", "") or "").strip(),
+                    str(record.get("approval_id", "") or "").strip(),
+                )
             if record is None:
                 raise HTTPException(status_code=404, detail="pending approval not found for this session")
             owner._append_sandbox_audit(
@@ -1546,7 +1551,12 @@ class MetaClawAPIServer:
             approval_id = str(body.get("approval_id", "") or "").strip()
             if not session_id:
                 raise HTTPException(status_code=400, detail="session_id is required")
-            record = owner._sandbox_approvals.reject(session_id, approval_id)
+            record = owner._find_pending_approval_for_session(session_id, approval_id)
+            if record is not None:
+                record = owner._sandbox_approvals.reject(
+                    str(record.get("session_id", "") or "").strip(),
+                    str(record.get("approval_id", "") or "").strip(),
+                )
             if record is None:
                 raise HTTPException(status_code=404, detail="pending approval not found for this session")
             owner._append_sandbox_audit(
@@ -3188,6 +3198,83 @@ class MetaClawAPIServer:
             seen.add(name)
             resolved.append(all_skills[name])
         return resolved
+
+    def _resolve_related_session_ids(self, session_id: str) -> list[str]:
+        normalized = str(session_id or "").strip()
+        if not normalized:
+            return []
+
+        related: list[str] = [normalized]
+
+        def add(candidate: str) -> None:
+            value = str(candidate or "").strip()
+            if value and value not in related:
+                related.append(value)
+
+        if normalized.startswith("tui-"):
+            add("agent:main:main")
+
+        if normalized.startswith("agent:"):
+            latest_tui_session = ""
+            if self._sandbox_approvals is not None:
+                pending_items = self._sandbox_approvals.list_pending()
+                if pending_items:
+                    latest_pending = max(
+                        pending_items,
+                        key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""),
+                    )
+                    latest_tui_session = str(latest_pending.get("session_id", "") or "").strip()
+            if latest_tui_session.startswith("tui-"):
+                add(latest_tui_session)
+            for candidate_session in (
+                list(self._pending_records.keys())
+                + list(self._feedback_by_session.keys())
+                + list(self._turn_counts.keys())
+                + list(self._session_skill_overrides.keys())
+            ):
+                candidate = str(candidate_session or "").strip()
+                if candidate.startswith("tui-"):
+                    add(candidate)
+            if len(self._session_skill_overrides) == 1:
+                only_session = next(iter(self._session_skill_overrides.keys()), "")
+                if str(only_session).startswith("tui-"):
+                    add(str(only_session))
+
+        return related
+
+    def _list_pending_approvals_for_session(self, session_id: str) -> list[dict[str, Any]]:
+        if self._sandbox_approvals is None:
+            return []
+        related_session_ids = self._resolve_related_session_ids(session_id)
+        if not related_session_ids:
+            return self._sandbox_approvals.list_pending()
+        pending_by_id: dict[str, dict[str, Any]] = {}
+        for related_session_id in related_session_ids:
+            for item in self._sandbox_approvals.list_pending(session_id=related_session_id):
+                approval_id = str(item.get("approval_id", "") or "").strip()
+                if approval_id:
+                    pending_by_id[approval_id] = item
+        items = list(pending_by_id.values())
+        items.sort(key=lambda item: str(item.get("created_at") or ""))
+        return items
+
+    def _find_pending_approval_for_session(
+        self,
+        session_id: str,
+        approval_id: str = "",
+    ) -> dict[str, Any] | None:
+        if self._sandbox_approvals is None:
+            return None
+        related_session_ids = self._resolve_related_session_ids(session_id)
+        for related_session_id in related_session_ids:
+            record = self._sandbox_approvals.get_pending(related_session_id, approval_id)
+            if record is not None:
+                return record
+        if approval_id:
+            for item in self._sandbox_approvals.list_pending():
+                if str(item.get("approval_id", "") or "").strip() == approval_id:
+                    return item
+        return None
 
     def _apply_selected_skills_to_messages(
         self,
