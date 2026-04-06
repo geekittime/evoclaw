@@ -7,3 +7,10 @@ memory_data/skills
 # Node
 node_modules/
 .DS_Store
+
+openclaw/node_modules/
+openclaw/dist/
+MetaClaw/__pycache__/
+MetaClaw/.venv/
+OpenClaw-RL/__pycache__/
+*.pyc
