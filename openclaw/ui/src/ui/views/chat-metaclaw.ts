@@ -324,6 +324,81 @@ function renderPendingApprovalsPanel(props: ChatMetaclawProps): TemplateResult {
   `;
 }
 
+export function renderMetaclawPendingApprovalsInline(
+  props: ChatMetaclawProps | undefined,
+  viewState: ChatMetaclawViewState,
+): TemplateResult | typeof nothing {
+  if (
+    !props ||
+    viewState.studioExpanded ||
+    props.sections.pendingApprovals.status !== "ready" ||
+    props.pendingApprovals.length === 0
+  ) {
+    return nothing;
+  }
+
+  return html`
+    <section class="metaclaw-inline-approvals">
+      <div class="metaclaw-inline-approvals__head">
+        <div>
+          <div class="metaclaw-panel__title">Pending Command Approvals</div>
+          <div class="metaclaw-panel__sub">
+            The agent requested restricted commands. Approve or reject them here without opening
+            MetaClaw Studio.
+          </div>
+        </div>
+        <span class="metaclaw-status-pill metaclaw-status-pill--warn">
+          ${props.pendingApprovals.length} waiting
+        </span>
+      </div>
+      <div class="metaclaw-approval-list">
+        ${props.pendingApprovals.map(
+          (item) => html`
+            <article class="metaclaw-approval">
+              <div class="metaclaw-approval__head">
+                <div class="mono">${item.approval_id}</div>
+                <div class="muted">${item.created_at}</div>
+              </div>
+              <div class="metaclaw-approval__body">
+                ${(item.decisions ?? []).map(
+                  (decision) => html`
+                    <div class="metaclaw-approval__decision">
+                      <strong>${decision.tool_name ?? "tool"}</strong>
+                      <span class="mono">${decision.command ?? "No command text provided"}</span>
+                      ${decision.paths?.length
+                        ? html`<span class="muted">Paths: ${decision.paths.join(", ")}</span>`
+                        : nothing}
+                      <span class="muted">${decision.reason ?? decision.action ?? ""}</span>
+                    </div>
+                  `,
+                )}
+              </div>
+              <div class="metaclaw-approval__actions">
+                <button
+                  class="btn primary"
+                  type="button"
+                  ?disabled=${props.saving}
+                  @click=${() => props.onApprove(item.approval_id)}
+                >
+                  Approve
+                </button>
+                <button
+                  class="btn danger"
+                  type="button"
+                  ?disabled=${props.saving}
+                  @click=${() => props.onReject(item.approval_id)}
+                >
+                  Reject
+                </button>
+              </div>
+            </article>
+          `,
+        )}
+      </div>
+    </section>
+  `;
+}
+
 function renderCommandPolicyPanel(
   props: ChatMetaclawProps,
   viewState: ChatMetaclawViewState,

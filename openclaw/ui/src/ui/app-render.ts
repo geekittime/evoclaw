@@ -7,6 +7,7 @@ import {
 import { t } from "../i18n/index.ts";
 import { getSafeLocalStorage } from "../local-storage.ts";
 import { refreshChatAvatar } from "./app-chat.ts";
+import { resolveChatModelOverrideValue } from "./chat-model-select-state.ts";
 import { renderUsageTab } from "./app-render-usage-tab.ts";
 import {
   renderChatControls,
@@ -118,6 +119,25 @@ import { renderOverview } from "./views/overview.ts";
 // Lazy-loaded view modules – deferred so the initial bundle stays small.
 // Each loader resolves once; subsequent calls return the cached module.
 type LazyState<T> = { mod: T | null; promise: Promise<T> | null };
+
+function buildMetaclawFeedbackFallbackSessionIds(
+  state: Pick<
+    AppViewState,
+    "sessionKey" | "chatModelOverrides" | "chatModelCatalog" | "sessionsResult"
+  >,
+): string[] {
+  const currentModel = resolveChatModelOverrideValue(state).trim();
+  if (!currentModel) {
+    return [];
+  }
+  const slashIndex = currentModel.lastIndexOf("/");
+  const modelId = slashIndex >= 0 ? currentModel.slice(slashIndex + 1).trim() : currentModel;
+  if (!modelId) {
+    return [];
+  }
+  const fallbackSessionId = `tui-${modelId}`;
+  return fallbackSessionId === state.sessionKey ? [] : [fallbackSessionId];
+}
 
 let _pendingUpdate: (() => void) | undefined;
 
@@ -1562,6 +1582,7 @@ export function renderApp(state: AppViewState) {
                     feedback,
                     responseText,
                     instructionText,
+                    buildMetaclawFeedbackFallbackSessionIds(state),
                   );
                   await loadMetaclawState(state);
                   return result;

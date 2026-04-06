@@ -410,18 +410,61 @@ export async function submitMetaclawFeedback(
   feedback: string,
   responseText: string,
   instructionText: string,
+  fallbackSessionIds: string[] = [],
 ) {
-  return metaclawRequest<MetaclawFeedbackResponse>(state, "/v1/feedback", {
-    method: "POST",
-    body: JSON.stringify({
-      session_id: state.sessionKey,
-      turn,
-      rating,
-      feedback,
-      response_text: responseText,
-      instruction_text: instructionText,
-    }),
-  });
+  const attempts: Array<{ sessionId: string; turn: number | null }> = [];
+  const seen = new Set<string>();
+  const addAttempt = (sessionId: string, attemptTurn: number | null) => {
+    const normalizedSessionId = sessionId.trim();
+    if (!normalizedSessionId) {
+      return;
+    }
+    const key = `${normalizedSessionId}::${attemptTurn == null ? "none" : attemptTurn}`;
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    attempts.push({ sessionId: normalizedSessionId, turn: attemptTurn });
+  };
+
+  addAttempt(state.sessionKey, turn);
+  if (turn != null) {
+    addAttempt(state.sessionKey, null);
+  }
+  for (const fallbackSessionId of fallbackSessionIds) {
+    addAttempt(fallbackSessionId, turn);
+    if (turn != null) {
+      addAttempt(fallbackSessionId, null);
+    }
+  }
+
+  let lastError: unknown = null;
+  for (const attempt of attempts) {
+    try {
+      return await metaclawRequest<MetaclawFeedbackResponse>(state, "/v1/feedback", {
+        method: "POST",
+        body: JSON.stringify({
+          session_id: attempt.sessionId,
+          turn: attempt.turn,
+          rating,
+          feedback,
+          response_text: responseText,
+          instruction_text: instructionText,
+        }),
+      });
+    } catch (error) {
+      const requestError = toMetaclawRequestError(error);
+      lastError = requestError;
+      const shouldRetry =
+        requestError.statusCode === 404 &&
+        requestError.message.toLowerCase().includes("target turn record not found");
+      if (!shouldRetry) {
+        throw requestError;
+      }
+    }
+  }
+
+  throw toMetaclawRequestError(lastError);
 }
 
 export async function resolveMetaclawApproval(

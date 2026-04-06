@@ -1890,10 +1890,19 @@ class MetaClawAPIServer:
         if pending is not None and self._feedback_record_matches(pending, turn, response_text):
             return dict(pending)
 
+        normalized_target = self._normalize_feedback_response_text(response_text)
+        if normalized_target:
+            for pending_session_id, pending_record in reversed(list(self._pending_records.items())):
+                if pending_session_id == session_id:
+                    continue
+                if self._feedback_record_matches(pending_record, turn, response_text):
+                    return dict(pending_record)
+
         if not self._enriched_record_file or not os.path.exists(self._enriched_record_file):
             return None
 
         latest_match: dict[str, Any] | None = None
+        latest_cross_session_match: dict[str, Any] | None = None
         try:
             with open(self._enriched_record_file, "r", encoding="utf-8") as f:
                 for line in f:
@@ -1904,14 +1913,16 @@ class MetaClawAPIServer:
                         item = json.loads(line)
                     except Exception:
                         continue
-                    if item.get("session_id") != session_id:
-                        continue
                     if not self._feedback_record_matches(item, turn, response_text):
                         continue
-                    latest_match = item
+                    if item.get("session_id") == session_id:
+                        latest_match = item
+                        continue
+                    if normalized_target:
+                        latest_cross_session_match = item
         except OSError:
             return None
-        return latest_match
+        return latest_match or latest_cross_session_match
 
     def _build_fallback_feedback_record(
         self,
@@ -2577,8 +2588,6 @@ class MetaClawAPIServer:
                 messages = self._inject_task_brief(messages, session_id, effective_memory_scope)
             if self.config.user_profile_enabled:
                 messages = self._inject_user_profile(messages, session_id, effective_memory_scope)
-            if self.config.feedback_enabled:
-                messages = self._inject_important_skill(messages)
             if (
                 self.memory_manager
                 and self.skill_manager
@@ -3154,6 +3163,76 @@ class MetaClawAPIServer:
             for skill in skills
             if isinstance(skill, dict) and str(skill.get("name", "")).strip() in selected
         ]
+
+    def _resolve_selected_skills_for_session(self, session_id: str) -> list[dict[str, Any]]:
+        if not self.skill_manager or not session_id:
+            return []
+        selected_raw = self._session_skill_overrides.get(session_id)
+        if selected_raw is None and session_id.startswith("tui-"):
+            selected_raw = self._session_skill_overrides.get("agent:main:main")
+        if selected_raw is None and session_id.startswith("tui-") and len(self._session_skill_overrides) == 1:
+            selected_raw = next(iter(self._session_skill_overrides.values()), None)
+        if not selected_raw:
+            return []
+        all_skills = {
+            str(item.get("name", "")).strip(): item
+            for item in self._list_all_skills()
+            if str(item.get("name", "")).strip()
+        }
+        resolved: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for raw_name in selected_raw:
+            name = str(raw_name or "").strip()
+            if not name or name in seen or name not in all_skills:
+                continue
+            seen.add(name)
+            resolved.append(all_skills[name])
+        return resolved
+
+    def _apply_selected_skills_to_messages(
+        self,
+        messages: list[dict],
+        session_id: str,
+        skills: list[dict[str, Any]],
+        *,
+        log_label: str = "injecting selected",
+    ) -> list[dict]:
+        if not self.skill_manager or not skills:
+            if session_id:
+                self._latest_injected_skills.pop(session_id, None)
+            return messages
+
+        skill_names = [
+            str(skill.get("name", skill.get("id", "unknown_skill"))).strip()
+            for skill in skills
+            if isinstance(skill, dict) and str(skill.get("name", skill.get("id", ""))).strip()
+        ]
+        if not skill_names:
+            if session_id:
+                self._latest_injected_skills.pop(session_id, None)
+            return messages
+
+        self.skill_manager.record_skill_selection(skill_names)
+        logger.info(
+            "[SkillManager] %s %d skills: %s",
+            log_label,
+            len(skill_names),
+            ", ".join(skill_names)[:400],
+        )
+
+        skill_text = self.skill_manager.format_for_conversation(skills)
+        next_messages = list(messages)
+        sys_indices = [i for i, m in enumerate(next_messages) if m.get("role") == "system"]
+        if sys_indices:
+            idx = sys_indices[0]
+            existing = _flatten_message_content(next_messages[idx].get("content", ""))
+            next_messages[idx] = {**next_messages[idx], "content": existing + "\n\n" + skill_text}
+        else:
+            next_messages.insert(0, {"role": "system", "content": skill_text})
+
+        if session_id:
+            self._latest_injected_skills[session_id] = skill_names
+        return next_messages
 
     def _build_skills_payload(self, session_id: str = "") -> dict[str, Any]:
         important = self._ensure_important_skill_exists() if self.skill_manager else None
@@ -3834,46 +3913,14 @@ class MetaClawAPIServer:
         return result
 
     def _inject_skills(self, messages: list[dict], session_id: str = "") -> list[dict]:
-        """Prepend skill guidance to the system message."""
-        if not self.skill_manager:
-            return messages
-
-        user_msgs = [m for m in messages if m.get("role") == "user"]
-        task_desc = _flatten_message_content(user_msgs[-1].get("content", "")) if user_msgs else ""
-        if not task_desc:
-            return messages
-
-        skills = self.skill_manager.retrieve(task_desc, top_k=self.config.skill_top_k)
-        skills = self._filter_skills_for_session(skills, session_id=session_id)
-        if not skills:
-            return messages
-
-        skill_names = [
-            s.get("name", s.get("id", "unknown_skill"))
-            for s in skills
-            if isinstance(s, dict)
-        ]
-        self.skill_manager.record_skill_selection(skill_names)
-        logger.info(
-            "[SkillManager] injecting %d skills: %s",
-            len(skill_names),
-            ", ".join(skill_names)[:400],
+        """Prepend only the explicitly selected session skills to the system message."""
+        skills = self._resolve_selected_skills_for_session(session_id)
+        return self._apply_selected_skills_to_messages(
+            messages,
+            session_id,
+            skills,
+            log_label="injecting selected",
         )
-
-        skill_text = self.skill_manager.format_for_conversation(skills)
-        messages = list(messages)
-
-        sys_indices = [i for i, m in enumerate(messages) if m.get("role") == "system"]
-        if sys_indices:
-            idx = sys_indices[0]
-            existing = _flatten_message_content(messages[idx].get("content", ""))
-            messages[idx] = {**messages[idx], "content": existing + "\n\n" + skill_text}
-        else:
-            messages.insert(0, {"role": "system", "content": skill_text})
-
-        if session_id:
-            self._latest_injected_skills[session_id] = skill_names
-        return messages
 
     # ------------------------------------------------------------------ #
     # Sample submission                                                    #
@@ -4261,19 +4308,15 @@ class MetaClawAPIServer:
         if not task_desc:
             return messages
 
-        # --- 1. Retrieve relevant skills (for template customization, not injection)
-        skills = self.skill_manager.retrieve_relevant(
-            task_desc, top_k=min(self.config.skill_top_k, 5),
-        )
-        skills = self._filter_skills_for_session(skills, session_id=session_id)
+        # --- 1. Use the session's explicit skill selection only -------------------
+        skills = self._resolve_selected_skills_for_session(session_id)
         skill_names = [
             s.get("name", s.get("id", "unknown_skill"))
             for s in skills
             if isinstance(s, dict)
         ]
 
-        # Need >= 2 relevant skills for synergy template; otherwise plain memory.
-        if len(skills) < 2:
+        if not skills:
             return await self._inject_memory(messages, scope_id=scope_id)
 
         # --- 2. Retrieve memories -------------------------------------------------
@@ -4285,7 +4328,12 @@ class MetaClawAPIServer:
         )
 
         if not memories:
-            return self._inject_skills(messages, session_id=session_id)
+            return self._apply_selected_skills_to_messages(
+                messages,
+                session_id,
+                skills,
+                log_label="injecting selected",
+            )
 
         # Dedup procedural memories that overlap with matched skills.
         memories = self._dedup_memory_against_skills(
@@ -4294,10 +4342,15 @@ class MetaClawAPIServer:
 
         memory_text = self.memory_manager.render_for_prompt(memories)
         if not memory_text:
-            return self._inject_skills(messages, session_id=session_id)
+            return self._apply_selected_skills_to_messages(
+                messages,
+                session_id,
+                skills,
+                log_label="injecting selected",
+            )
 
-        # --- 3. Build skill-aware structured template (no full skill injection) ---
-        # Extract compact process steps from matched skills.
+        # --- 3. Build skill-aware structured template from selected skills --------
+        # Extract compact process steps from explicitly selected skills.
         import re as _re
         skill_steps = []
         for s in skills[:3]:
@@ -4326,7 +4379,7 @@ class MetaClawAPIServer:
 
         # Log summary.
         logger.info(
-            "[Synergy] injecting %d memories + %d skill hints (~%d tokens) for task=%s",
+            "[Synergy] injecting %d memories + %d selected skill hints (~%d tokens) for task=%s",
             len(memories),
             len(skills),
             len(augmented_text.split()),
@@ -4347,5 +4400,7 @@ class MetaClawAPIServer:
             self.skill_manager.record_skill_selection(skill_names)
             if session_id:
                 self._latest_injected_skills[session_id] = skill_names
+        elif session_id:
+            self._latest_injected_skills.pop(session_id, None)
 
         return messages

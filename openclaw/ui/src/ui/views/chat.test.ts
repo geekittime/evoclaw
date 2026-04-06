@@ -920,6 +920,53 @@ describe("chat view", () => {
     expect(container.textContent).toContain("Bad");
   });
 
+  it("shows pending MetaClaw approvals with Approve and Reject buttons even when Studio is collapsed", async () => {
+    const onApprove = vi.fn();
+    const onReject = vi.fn();
+    const container = document.createElement("div");
+    cleanupChatModuleState();
+    try {
+      render(
+        renderChat(
+          createProps({
+            metaclaw: createMetaclawProps({
+              pendingApprovals: [
+                {
+                  approval_id: "approval-1",
+                  created_at: "2026-04-06 20:00:00",
+                  decisions: [
+                    {
+                      tool_name: "exec_command",
+                      command: "pwd",
+                      reason: "Needs operator approval",
+                    },
+                  ],
+                },
+              ],
+              onApprove,
+              onReject,
+            }),
+          }),
+        ),
+        container,
+      );
+
+      expect(container.textContent).toContain("Pending Command Approvals");
+      expect(container.textContent).toContain("Approve");
+      expect(container.textContent).toContain("Reject");
+
+      const buttons = Array.from(container.querySelectorAll("button"));
+      buttons.find((button) => button.textContent?.includes("Approve"))?.click();
+      buttons.find((button) => button.textContent?.includes("Reject"))?.click();
+      await flushTasks();
+
+      expect(onApprove).toHaveBeenCalledWith("approval-1");
+      expect(onReject).toHaveBeenCalledWith("approval-1");
+    } finally {
+      cleanupChatModuleState();
+    }
+  });
+
   it("renders answer-level MetaClaw feedback buttons even when assistant turns omit turn metadata", () => {
     const container = document.createElement("div");
     render(

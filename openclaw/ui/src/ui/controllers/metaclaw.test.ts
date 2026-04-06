@@ -150,4 +150,49 @@ describe("loadMetaclawState", () => {
 
     vi.unstubAllGlobals();
   });
+
+  it("retries feedback against fallback MetaClaw sessions when the primary session has no turn record", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+      if (body.session_id === "agent:main:main" && body.turn === 7) {
+        return jsonResponse({ detail: "target turn record not found" }, { status: 404 });
+      }
+      if (body.session_id === "agent:main:main" && body.turn === null) {
+        return jsonResponse({ detail: "target turn record not found" }, { status: 404 });
+      }
+      expect(body).toMatchObject({
+        session_id: "tui-deepseek-chat",
+        turn: 7,
+        rating: "good",
+        feedback: "Good answer.",
+      });
+      return jsonResponse({
+        ok: true,
+        session_id: "tui-deepseek-chat",
+        turn: 7,
+        rating: "good",
+        skill_updated: true,
+        skill_name: "important-notes",
+        skill_description: "notes",
+        skill_content: "Remember the last preference.",
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+
+    const state = createState();
+    const result = await submitMetaclawFeedback(
+      state,
+      7,
+      "good",
+      "Good answer.",
+      "Hi there.",
+      "hi",
+      ["tui-deepseek-chat"],
+    );
+
+    expect(result.session_id).toBe("tui-deepseek-chat");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+
+    vi.unstubAllGlobals();
+  });
 });
