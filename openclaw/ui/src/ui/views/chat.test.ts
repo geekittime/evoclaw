@@ -16,7 +16,7 @@ import { SKIP_DELETE_CONFIRM_KEY } from "../chat/grouped-render.ts";
 import type { GatewayBrowserClient } from "../gateway.ts";
 import type { ModelCatalogEntry } from "../types.ts";
 import type { SessionsListResult } from "../types.ts";
-import { renderChat, type ChatProps } from "./chat.ts";
+import { cleanupChatModuleState, renderChat, type ChatProps } from "./chat.ts";
 import { renderOverview, type OverviewProps } from "./overview.ts";
 
 function readDeleteConfirmPreference(): string | null {
@@ -827,22 +827,73 @@ describe("chat view", () => {
     expect(senderLabels).toContain("Joaquin De Rojas");
   });
 
-  it("renders MetaClaw Studio panels from structured session state", () => {
+  it("renders a MetaClaw Studio toggle above the chat", () => {
     const container = document.createElement("div");
-    render(
-      renderChat(
-        createProps({
-          metaclaw: createMetaclawProps(),
-        }),
-      ),
-      container,
-    );
+    cleanupChatModuleState();
+    try {
+      render(
+        renderChat(
+          createProps({
+            metaclaw: createMetaclawProps(),
+          }),
+        ),
+        container,
+      );
 
-    expect(container.textContent).toContain("MetaClaw Studio");
-    expect(container.textContent).toContain("Pending Approvals");
-    expect(container.textContent).toContain("Command Policy");
-    expect(container.textContent).toContain("important-notes");
-    expect(container.textContent).toContain("Remember the last user preference.");
+      expect(container.textContent).toContain("Show MetaClaw Studio");
+      expect(container.textContent).not.toContain("Pending Approvals");
+      expect(container.textContent).not.toContain("Remember the last user preference.");
+    } finally {
+      cleanupChatModuleState();
+    }
+  });
+
+  it("toggles MetaClaw Studio open and closed from the header button", async () => {
+    const container = document.createElement("div");
+    cleanupChatModuleState();
+    try {
+      const props = createProps({
+        metaclaw: createMetaclawProps(),
+      });
+
+      const rerender = () => {
+        render(
+          renderChat({
+            ...props,
+            onRequestUpdate: rerender,
+          }),
+          container,
+        );
+      };
+
+      rerender();
+
+      const openButton = Array.from(container.querySelectorAll("button")).find((button) =>
+        button.textContent?.includes("Show MetaClaw Studio"),
+      );
+      expect(openButton).not.toBeUndefined();
+      openButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flushTasks();
+
+      expect(container.textContent).toContain("Hide MetaClaw Studio");
+      expect(container.textContent).toContain("Pending Approvals");
+      expect(container.textContent).toContain("Command Policy");
+      expect(container.textContent).toContain("important-notes");
+      expect(container.textContent).toContain("Remember the last user preference.");
+
+      const closeButton = Array.from(container.querySelectorAll("button")).find((button) =>
+        button.textContent?.includes("Hide MetaClaw Studio"),
+      );
+      expect(closeButton).not.toBeUndefined();
+      closeButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flushTasks();
+
+      expect(container.textContent).toContain("Show MetaClaw Studio");
+      expect(container.textContent).not.toContain("Pending Approvals");
+      expect(container.textContent).not.toContain("Remember the last user preference.");
+    } finally {
+      cleanupChatModuleState();
+    }
   });
 
   it("renders answer-level MetaClaw feedback buttons next to assistant turns", () => {

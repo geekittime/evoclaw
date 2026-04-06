@@ -62,6 +62,7 @@ export type ChatMetaclawProps = {
 };
 
 export type ChatMetaclawViewState = {
+  studioExpanded: boolean;
   feedbackTargetTurn: number | null;
   feedbackRating: "good" | "bad";
   feedbackText: string;
@@ -77,6 +78,7 @@ export type ChatMetaclawViewState = {
 
 export function createChatMetaclawViewState(): ChatMetaclawViewState {
   return {
+    studioExpanded: false,
     feedbackTargetTurn: null,
     feedbackRating: "good",
     feedbackText: "",
@@ -749,61 +751,89 @@ export function renderMetaclawStudio(
     ? props.selectedSkillNames.length
     : props.skills.length;
   const blockedPathCount = props.sandboxPolicy?.path_blocklist.length ?? 0;
+  const studioExpanded = viewState.studioExpanded;
+  const toggleLabel = studioExpanded ? "Hide MetaClaw Studio" : "Show MetaClaw Studio";
 
   return html`
-    <section class="metaclaw-studio">
-      <div class="metaclaw-studio__banner">
-        <div>
-          <div class="metaclaw-studio__eyebrow">MetaClaw Studio</div>
-          <div class="metaclaw-studio__title">
-            Feedback, approvals, prompt skills, and safety policy
-          </div>
-          <div class="metaclaw-studio__subtitle">
-            Give answer-level feedback next to assistant messages, approve commands with buttons,
-            and tune session rules without slash commands.
-          </div>
-        </div>
-        <div class="metaclaw-studio__actions">
-          <span
-            class="metaclaw-status-pill metaclaw-status-pill--${props.connected
-              ? "ready"
-              : "error"}"
-          >
-            ${props.connected ? "MetaClaw reachable" : "MetaClaw offline"}
-          </span>
-          <button
-            class="btn btn--ghost"
-            type="button"
-            ?disabled=${props.loading || props.saving}
-            @click=${props.onRefresh}
-          >
-            ${icons.refresh} Refresh
-          </button>
-        </div>
-      </div>
+    <div class="metaclaw-toggle-row">
+      <button
+        class="metaclaw-toggle"
+        type="button"
+        aria-expanded=${studioExpanded ? "true" : "false"}
+        aria-controls="metaclaw-studio-panel"
+        @click=${() => {
+          viewState.studioExpanded = !viewState.studioExpanded;
+          requestUpdate();
+        }}
+      >
+        <span class="metaclaw-toggle__label">
+          ${studioExpanded ? icons.panelLeftClose : icons.panelLeftOpen}
+          ${toggleLabel}
+        </span>
+        <span class="metaclaw-toggle__meta">
+          ${pendingCount} approvals · ${activeSkillCount}/${props.skills.length} skills ·
+          ${blockedPathCount} blocked paths
+        </span>
+      </button>
+    </div>
 
-      <div class="metaclaw-kpis">
-        <article class="metaclaw-kpi">
-          <strong>${pendingCount}</strong>
-          <span>Pending command approvals</span>
-        </article>
-        <article class="metaclaw-kpi">
-          <strong>${activeSkillCount}/${props.skills.length}</strong>
-          <span>Active skills in this session</span>
-        </article>
-        <article class="metaclaw-kpi">
-          <strong>${blockedPathCount}</strong>
-          <span>Blocked paths</span>
-        </article>
-      </div>
+    ${studioExpanded
+      ? html`
+          <section id="metaclaw-studio-panel" class="metaclaw-studio">
+            <div class="metaclaw-studio__banner">
+              <div>
+                <div class="metaclaw-studio__eyebrow">MetaClaw Studio</div>
+                <div class="metaclaw-studio__title">
+                  Feedback, approvals, prompt skills, and safety policy
+                </div>
+                <div class="metaclaw-studio__subtitle">
+                  Give answer-level feedback next to assistant messages, approve commands with
+                  buttons, and tune session rules without slash commands.
+                </div>
+              </div>
+              <div class="metaclaw-studio__actions">
+                <span
+                  class="metaclaw-status-pill metaclaw-status-pill--${props.connected
+                    ? "ready"
+                    : "error"}"
+                >
+                  ${props.connected ? "MetaClaw reachable" : "MetaClaw offline"}
+                </span>
+                <button
+                  class="btn btn--ghost"
+                  type="button"
+                  ?disabled=${props.loading || props.saving}
+                  @click=${props.onRefresh}
+                >
+                  ${icons.refresh} Refresh
+                </button>
+              </div>
+            </div>
 
-      <div class="metaclaw-studio__grid">
-        ${renderConnectionPanel(props)} ${renderPendingApprovalsPanel(props)}
-        ${renderCommandPolicyPanel(props, viewState, requestUpdate)}
-        ${renderAccessListsPanel(props, viewState, requestUpdate)} ${renderSkillsPanel(props)}
-        ${renderNotesPanel(props)}
-      </div>
-    </section>
+            <div class="metaclaw-kpis">
+              <article class="metaclaw-kpi">
+                <strong>${pendingCount}</strong>
+                <span>Pending command approvals</span>
+              </article>
+              <article class="metaclaw-kpi">
+                <strong>${activeSkillCount}/${props.skills.length}</strong>
+                <span>Active skills in this session</span>
+              </article>
+              <article class="metaclaw-kpi">
+                <strong>${blockedPathCount}</strong>
+                <span>Blocked paths</span>
+              </article>
+            </div>
+
+            <div class="metaclaw-studio__grid">
+              ${renderConnectionPanel(props)} ${renderPendingApprovalsPanel(props)}
+              ${renderCommandPolicyPanel(props, viewState, requestUpdate)}
+              ${renderAccessListsPanel(props, viewState, requestUpdate)} ${renderSkillsPanel(props)}
+              ${renderNotesPanel(props)}
+            </div>
+          </section>
+        `
+      : nothing}
   `;
 }
 
