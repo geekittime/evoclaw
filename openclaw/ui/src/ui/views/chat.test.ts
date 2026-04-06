@@ -920,6 +920,71 @@ describe("chat view", () => {
     expect(container.textContent).toContain("Bad");
   });
 
+  it("renders answer-level MetaClaw feedback buttons even when assistant turns omit turn metadata", () => {
+    const container = document.createElement("div");
+    render(
+      renderChat(
+        createProps({
+          metaclaw: createMetaclawProps(),
+          messages: [
+            {
+              role: "assistant",
+              content: "Here is the answer without an explicit turn.",
+              timestamp: 1000,
+            },
+          ],
+        }),
+      ),
+      container,
+    );
+
+    expect(container.textContent).toContain("How was this answer?");
+    expect(container.textContent).toContain("Good");
+    expect(container.textContent).toContain("Bad");
+  });
+
+  it("shows zero selected skills by default when no session selection exists", async () => {
+    const container = document.createElement("div");
+    cleanupChatModuleState();
+    try {
+      const props = createProps({
+        metaclaw: createMetaclawProps({
+          selectedSkillNames: [],
+          selectionCustomized: false,
+          latestInjectedSkills: [],
+        }),
+      });
+
+      const rerender = () => {
+        render(
+          renderChat({
+            ...props,
+            onRequestUpdate: rerender,
+          }),
+          container,
+        );
+      };
+
+      rerender();
+
+      const openButton = Array.from(container.querySelectorAll("button")).find((button) =>
+        button.textContent?.includes("Show MetaClaw Studio"),
+      );
+      openButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flushTasks();
+
+      expect(container.textContent).toContain("No skills selected");
+      expect(container.textContent).toContain("0 / 2 active");
+
+      const checkedSkills = container.querySelectorAll(
+        ".metaclaw-skill-list input[type='checkbox']:checked",
+      );
+      expect(checkedSkills).toHaveLength(0);
+    } finally {
+      cleanupChatModuleState();
+    }
+  });
+
   it("opens delete confirm on the left for user messages", () => {
     const originalPreference = readDeleteConfirmPreference();
     clearDeleteConfirmPreference();

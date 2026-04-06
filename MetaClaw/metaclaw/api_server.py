@@ -1314,11 +1314,13 @@ class MetaClawAPIServer:
             if rating not in {"good", "bad"}:
                 raise HTTPException(status_code=400, detail="rating must be 'good' or 'bad'")
             feedback_text = str(body.get("feedback", "") or "").strip()
+            response_text = str(body.get("response_text", "") or "").strip()
             result = await owner._handle_feedback(
                 session_id=session_id,
                 turn=turn,
                 rating=rating,
                 feedback_text=feedback_text,
+                response_text=response_text,
             )
             return JSONResponse(content=result)
 
@@ -1853,9 +1855,37 @@ class MetaClawAPIServer:
             return None
         return latest_match
 
-    def _load_record_for_feedback(self, session_id: str, turn: int | None) -> dict[str, Any] | None:
+    def _normalize_feedback_response_text(self, value: str) -> str:
+        return re.sub(r"\s+", " ", str(value or "")).strip()
+
+    def _feedback_record_matches(
+        self,
+        record: dict[str, Any],
+        turn: int | None,
+        response_text: str,
+    ) -> bool:
+        if turn is not None:
+            return int(record.get("turn", 0) or 0) == turn
+        normalized_target = self._normalize_feedback_response_text(response_text)
+        if not normalized_target:
+            return True
+        normalized_response = self._normalize_feedback_response_text(record.get("response_text", ""))
+        if not normalized_response:
+            return False
+        return (
+            normalized_response == normalized_target
+            or normalized_target in normalized_response
+            or normalized_response in normalized_target
+        )
+
+    def _load_record_for_feedback(
+        self,
+        session_id: str,
+        turn: int | None,
+        response_text: str = "",
+    ) -> dict[str, Any] | None:
         pending = self._pending_records.get(session_id)
-        if pending is not None and (turn is None or int(pending.get("turn", 0) or 0) == turn):
+        if pending is not None and self._feedback_record_matches(pending, turn, response_text):
             return dict(pending)
 
         if not self._enriched_record_file or not os.path.exists(self._enriched_record_file):
@@ -1874,7 +1904,7 @@ class MetaClawAPIServer:
                         continue
                     if item.get("session_id") != session_id:
                         continue
-                    if turn is not None and int(item.get("turn", 0) or 0) != turn:
+                    if not self._feedback_record_matches(item, turn, response_text):
                         continue
                     latest_match = item
         except OSError:
@@ -3063,7 +3093,7 @@ class MetaClawAPIServer:
         }
         selected = self._session_skill_overrides.get(session_id)
         if selected is None:
-            return False, known_names
+            return False, set()
         return True, {
             str(name or "").strip()
             for name in selected
@@ -3073,9 +3103,9 @@ class MetaClawAPIServer:
     def _filter_skills_for_session(self, skills: list[dict], session_id: str) -> list[dict]:
         if not session_id:
             return skills
-        customized, selected = self._get_effective_skill_selection(session_id)
-        if not customized:
-            return skills
+        _, selected = self._get_effective_skill_selection(session_id)
+        if not selected:
+            return []
         return [
             skill
             for skill in skills
@@ -3440,8 +3470,9 @@ class MetaClawAPIServer:
         turn: int | None,
         rating: str,
         feedback_text: str,
+        response_text: str = "",
     ) -> dict[str, Any]:
-        record = self._load_record_for_feedback(session_id, turn)
+        record = self._load_record_for_feedback(session_id, turn, response_text=response_text)
         if record is None:
             raise HTTPException(status_code=404, detail="target turn record not found")
 

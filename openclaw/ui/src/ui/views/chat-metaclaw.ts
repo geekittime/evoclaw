@@ -1,4 +1,5 @@
 import { html, nothing, type TemplateResult } from "lit";
+import { extractText } from "../chat/message-extract.ts";
 import { normalizeRoleForGrouping } from "../chat/message-normalizer.ts";
 import type { MetaclawFeedbackResponse, MetaclawSectionState } from "../controllers/metaclaw.ts";
 import { icons } from "../icons.ts";
@@ -58,11 +59,13 @@ export type ChatMetaclawProps = {
     turn: number | null,
     rating: "good" | "bad",
     feedback: string,
+    responseText: string,
   ) => Promise<MetaclawFeedbackResponse>;
 };
 
 export type ChatMetaclawViewState = {
   studioExpanded: boolean;
+  feedbackTargetKey: string | null;
   feedbackTargetTurn: number | null;
   feedbackRating: "good" | "bad";
   feedbackText: string;
@@ -79,6 +82,7 @@ export type ChatMetaclawViewState = {
 export function createChatMetaclawViewState(): ChatMetaclawViewState {
   return {
     studioExpanded: false,
+    feedbackTargetKey: null,
     feedbackTargetTurn: null,
     feedbackRating: "good",
     feedbackText: "",
@@ -158,15 +162,32 @@ function appendUnique(values: string[], value: string): string[] {
 }
 
 function toggleSkill(skillName: string, checked: boolean, props: ChatMetaclawProps) {
-  const allNames = props.skills.map((skill) => skill.name);
-  const selected = new Set(props.selectionCustomized ? props.selectedSkillNames : allNames);
+  const selected = new Set(props.selectedSkillNames);
   if (checked) {
     selected.add(skillName);
   } else {
     selected.delete(skillName);
   }
-  const nextSelection = [...selected];
-  props.onSaveSkillSelection(nextSelection.length === allNames.length ? null : nextSelection);
+  props.onSaveSkillSelection([...selected].sort((left, right) => left.localeCompare(right)));
+}
+
+function assistantFeedbackLabel(turn: number | null, responseText: string) {
+  if (turn != null) {
+    return `How was answer #${turn}?`;
+  }
+  const snippet = responseText.trim().slice(0, 48);
+  return snippet ? `How was this answer?` : "How was this answer?";
+}
+
+function extractAssistantResponseText(group: MessageGroup): string {
+  const parts: string[] = [];
+  for (const entry of group.messages) {
+    const text = extractText(entry.message);
+    if (text?.trim()) {
+      parts.push(text.trim());
+    }
+  }
+  return parts.join("\n\n").trim();
 }
 
 function renderConnectionPanel(props: ChatMetaclawProps): TemplateResult {
@@ -627,9 +648,8 @@ function renderAccessListsPanel(
 
 function renderSkillsPanel(props: ChatMetaclawProps): TemplateResult {
   const section = props.sections.skills;
-  const selected = new Set(
-    props.selectionCustomized ? props.selectedSkillNames : props.skills.map((skill) => skill.name),
-  );
+  const selected = new Set(props.selectedSkillNames);
+  const activeCount = props.selectedSkillNames.length;
 
   return html`
     <section class="metaclaw-panel metaclaw-panel--skills">
@@ -646,13 +666,8 @@ function renderSkillsPanel(props: ChatMetaclawProps): TemplateResult {
       ${section.status === "ready"
         ? html`
             <div class="metaclaw-inline-stats">
-              <span class="chip">
-                ${props.selectionCustomized ? "Custom selection" : "All skills enabled"}
-              </span>
-              <span class="chip">
-                ${props.selectionCustomized ? props.selectedSkillNames.length : props.skills.length}
-                / ${props.skills.length} active
-              </span>
+              <span class="chip">${activeCount === 0 ? "No skills selected" : "Custom selection"}</span>
+              <span class="chip">${activeCount} / ${props.skills.length} active</span>
             </div>
             ${props.latestInjectedSkills.length
               ? html`
@@ -666,7 +681,7 @@ function renderSkillsPanel(props: ChatMetaclawProps): TemplateResult {
                   </div>
                 `
               : nothing}
-            <div class="metaclaw-skill-list">
+            <div class="metaclaw-skill-list metaclaw-skill-list--scrollable">
               ${props.skills.length === 0
                 ? html`<div class="metaclaw-empty">No skills available.</div>`
                 : props.skills.map(
@@ -696,7 +711,12 @@ function renderSkillsPanel(props: ChatMetaclawProps): TemplateResult {
                 class="btn"
                 type="button"
                 ?disabled=${props.saving}
-                @click=${() => props.onSaveSkillSelection(null)}
+                @click=${() =>
+                  props.onSaveSkillSelection(
+                    props.skills
+                      .map((skill) => skill.name)
+                      .sort((left, right) => left.localeCompare(right)),
+                  )}
               >
                 Use All Skills
               </button>
@@ -747,9 +767,7 @@ export function renderMetaclawStudio(
   }
 
   const pendingCount = props.pendingApprovals.length;
-  const activeSkillCount = props.selectionCustomized
-    ? props.selectedSkillNames.length
-    : props.skills.length;
+  const activeSkillCount = props.selectedSkillNames.length;
   const blockedPathCount = props.sandboxPolicy?.path_blocklist.length ?? 0;
   const studioExpanded = viewState.studioExpanded;
   const toggleLabel = studioExpanded ? "Hide MetaClaw Studio" : "Show MetaClaw Studio";
@@ -838,14 +856,16 @@ export function renderMetaclawStudio(
 }
 
 function openFeedbackComposer(
-  turn: number,
+  targetKey: string,
+  turn: number | null,
   rating: "good" | "bad",
   viewState: ChatMetaclawViewState,
   requestUpdate: () => void,
 ) {
   const isSameComposer =
-    viewState.feedbackTargetTurn === turn && viewState.feedbackRating === rating;
+    viewState.feedbackTargetKey === targetKey && viewState.feedbackRating === rating;
   if (isSameComposer) {
+    viewState.feedbackTargetKey = null;
     viewState.feedbackTargetTurn = null;
     viewState.feedbackText = "";
     viewState.feedbackMessage = "";
@@ -853,6 +873,7 @@ function openFeedbackComposer(
     requestUpdate();
     return;
   }
+  viewState.feedbackTargetKey = targetKey;
   viewState.feedbackTargetTurn = turn;
   viewState.feedbackRating = rating;
   viewState.feedbackText = "";
@@ -872,11 +893,14 @@ export function renderAssistantFeedback(
   }
 
   const turn = extractAssistantTurn(group);
-  if (turn == null) {
+  const responseText = extractAssistantResponseText(group);
+  if (!responseText) {
     return nothing;
   }
+  const feedbackKey =
+    turn != null ? `turn:${turn}` : `assistant:${group.key}:${group.messages.length}:${responseText.length}`;
 
-  const isOpen = viewState.feedbackTargetTurn === turn;
+  const isOpen = viewState.feedbackTargetKey === feedbackKey;
   const calloutClass =
     viewState.feedbackMessageTone === "danger" ? "callout danger" : "callout success";
 
@@ -884,7 +908,7 @@ export function renderAssistantFeedback(
     <div class="metaclaw-feedback">
       <div class="metaclaw-feedback__bar">
         <div>
-          <div class="metaclaw-feedback__title">How was answer #${turn}?</div>
+          <div class="metaclaw-feedback__title">${assistantFeedbackLabel(turn, responseText)}</div>
           <div class="metaclaw-feedback__sub">
             Feedback is summarized into important-notes for future prompts.
           </div>
@@ -894,7 +918,8 @@ export function renderAssistantFeedback(
             class="btn ${isOpen && viewState.feedbackRating === "good" ? "primary" : ""}"
             type="button"
             ?disabled=${viewState.feedbackSaving || !props.connected}
-            @click=${() => openFeedbackComposer(turn, "good", viewState, requestUpdate)}
+            @click=${() =>
+              openFeedbackComposer(feedbackKey, turn, "good", viewState, requestUpdate)}
           >
             ${icons.check} Good
           </button>
@@ -902,7 +927,8 @@ export function renderAssistantFeedback(
             class="btn ${isOpen && viewState.feedbackRating === "bad" ? "danger" : ""}"
             type="button"
             ?disabled=${viewState.feedbackSaving || !props.connected}
-            @click=${() => openFeedbackComposer(turn, "bad", viewState, requestUpdate)}
+            @click=${() =>
+              openFeedbackComposer(feedbackKey, turn, "bad", viewState, requestUpdate)}
           >
             ${icons.x} Bad
           </button>
@@ -938,6 +964,7 @@ export function renderAssistantFeedback(
                         turn,
                         viewState.feedbackRating,
                         viewState.feedbackText.trim(),
+                        responseText,
                       );
                       viewState.feedbackText = "";
                       viewState.feedbackMessage = result.skill_updated
@@ -961,6 +988,7 @@ export function renderAssistantFeedback(
                   type="button"
                   ?disabled=${viewState.feedbackSaving}
                   @click=${() => {
+                    viewState.feedbackTargetKey = null;
                     viewState.feedbackTargetTurn = null;
                     viewState.feedbackText = "";
                     viewState.feedbackMessage = "";

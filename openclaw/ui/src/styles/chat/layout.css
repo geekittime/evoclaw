@@ -816,6 +816,22 @@
   gap: 3px;
 }
 
+.metaclaw-skill-list--scrollable {
+  max-height: 360px;
+  overflow-y: auto;
+  padding-right: 6px;
+  scrollbar-width: thin;
+}
+
+.metaclaw-skill-list--scrollable::-webkit-scrollbar {
+  width: 8px;
+}
+
+.metaclaw-skill-list--scrollable::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 20%, var(--border));
+}
+
 .metaclaw-empty {
   padding: 4px 0;
 }
@@ -871,6 +887,7 @@
 
 .metaclaw-feedback__bar {
   align-items: center;
+  gap: 12px;
 }
 
 .metaclaw-feedback__title {
@@ -887,6 +904,7 @@
 .metaclaw-feedback__actions {
   align-items: center;
   justify-content: flex-start;
+  flex-wrap: wrap;
 }
 
 @media (max-width: 980px) {

@@ -408,6 +408,7 @@ export async function submitMetaclawFeedback(
   turn: number | null,
   rating: "good" | "bad",
   feedback: string,
+  responseText: string,
 ) {
   return metaclawRequest<MetaclawFeedbackResponse>(state, "/v1/feedback", {
     method: "POST",
@@ -416,6 +417,7 @@ export async function submitMetaclawFeedback(
       turn,
       rating,
       feedback,
+      response_text: responseText,
     }),
   });
 }
