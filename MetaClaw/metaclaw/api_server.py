@@ -175,7 +175,7 @@ def _normalize_assistant_content_parts(content: list[dict]) -> tuple[str, list[d
 
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
-_TOOL_HANDLE_RE = re.compile(r"^call_?(?:kimi|xml)_?\d?+$")
+_TOOL_HANDLE_RE = re.compile(r"^call_?(?:kimi|xml)_?\d*$")
 _TRAILING_DIGITS_RE = re.compile(r"\d+$")
 _FUNCTIONS_PREFIX_RE = re.compile(r"^functions[._]?")
 _KIMI_TOOL_CALL_RE = re.compile(

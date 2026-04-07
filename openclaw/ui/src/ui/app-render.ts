@@ -1633,6 +1633,7 @@ export function renderApp(state: AppViewState) {
                     return;
                   }
                   state.metaclawPendingApprovals = [];
+                  state.metaclawSaving = true;
                   try {
                     await resolveMetaclawApproval(
                       state,
@@ -1654,6 +1655,7 @@ export function renderApp(state: AppViewState) {
                     state.metaclawError = error instanceof Error ? error.message : String(error);
                     throw error;
                   } finally {
+                    state.metaclawSaving = false;
                     state.scheduleMetaclawRefresh(150);
                   }
                 },
