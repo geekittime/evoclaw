@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { CURRENT_SESSION_VERSION } from "@mariozechner/pi-coding-agent";
 import { resolveDefaultAgentId } from "../../agents/agent-scope.js";
+import { normalizeSkillFilter } from "../../agents/skills/filter.js";
 import {
   abortEmbeddedPiRun,
   isEmbeddedPiRunActive,
@@ -18,6 +19,7 @@ import {
   type SessionEntry,
   updateSessionStore,
 } from "../../config/sessions.js";
+import type { SessionFeedbackRecord } from "../../config/sessions/types.js";
 import {
   hasInternalHookListeners,
   triggerInternalHook,
@@ -42,11 +44,19 @@ import {
   validateSessionsMessagesSubscribeParams,
   validateSessionsMessagesUnsubscribeParams,
   validateSessionsPatchParams,
+  validateSessionsPromptContextCompactParams,
+  validateSessionsPromptContextFeedbackParams,
+  validateSessionsPromptContextGetParams,
+  validateSessionsPromptContextSkillsSetParams,
   validateSessionsPreviewParams,
   validateSessionsResetParams,
   validateSessionsResolveParams,
   validateSessionsSendParams,
 } from "../protocol/index.js";
+import {
+  summarizeConversationHistory,
+  summarizeFeedbackIntoImportantNote,
+} from "../session-prompt-context.js";
 import {
   archiveSessionTranscriptsForSession,
   cleanupSessionBeforeMutation,
@@ -55,6 +65,10 @@ import {
 } from "../session-reset-service.js";
 import { reactivateCompletedSubagentSession } from "../session-subagent-reactivation.js";
 import {
+  buildUpdatedPromptContextForSkillSelection,
+  buildUpdatedPromptContextForSummary,
+  buildUpdatedPromptContextFromFeedback,
+  getSessionPromptContext,
   archiveFileOnDisk,
   listSessionsFromStore,
   loadCombinedSessionStoreForGateway,
@@ -82,6 +96,60 @@ import type {
   RespondFn,
 } from "./types.js";
 import { assertValidParams } from "./validation.js";
+
+function buildPromptContextResponse(params: {
+  key: string;
+  entry?: SessionEntry;
+  availableSkills?: Array<{ name: string; description: string; category?: string }>;
+}) {
+  const promptContext = getSessionPromptContext(params.entry);
+  return {
+    ok: true,
+    key: params.key,
+    selectedSkillNames: promptContext?.selectedSkillNames ?? [],
+    selectionCustomized: promptContext?.selectionCustomized === true,
+    latestInjectedSkills:
+      params.entry?.skillsSnapshot?.resolvedSkills?.map((skill) => skill.name) ??
+      params.entry?.skillsSnapshot?.skills?.map((skill) => skill.name) ??
+      [],
+    importantNotes: promptContext?.importantNotes?.trim()
+      ? {
+          name: "important-notes",
+          description: "Durable guidance distilled from operator feedback.",
+          content: promptContext.importantNotes,
+        }
+      : null,
+    contextSummary: promptContext?.contextSummary?.trim()
+      ? {
+          session_id: params.entry?.sessionId ?? params.key,
+          content: promptContext.contextSummary,
+          has_summary: true,
+        }
+      : null,
+    feedbackRecords: promptContext?.feedbackRecords ?? [],
+    skillSelectionHistory: promptContext?.skillSelectionHistory ?? [],
+    skills:
+      params.availableSkills?.map((skill) => ({
+        name: skill.name,
+        description: skill.description,
+        category: skill.category ?? "",
+      })) ?? [],
+  };
+}
+
+async function updateSessionPromptContext(params: {
+  key: string;
+  mutate: (entry: SessionEntry | undefined) => Promise<SessionEntry> | SessionEntry;
+}): Promise<{ key: string; storePath: string; entry: SessionEntry }> {
+  const { target, storePath } = resolveGatewaySessionTargetFromKey(params.key);
+  const result = await updateSessionStore(storePath, async (store) => {
+    const existing = resolveFreshestSessionEntryFromStoreKeys(store, target.storeKeys);
+    const nextEntry = await params.mutate(existing);
+    store[target.canonicalKey] = nextEntry;
+    return nextEntry;
+  });
+  return { key: target.canonicalKey, storePath, entry: result };
+}
 
 function requireSessionKey(key: unknown, respond: RespondFn): string | null {
   const raw =
@@ -1109,6 +1177,250 @@ export const sessionsHandlers: GatewayRequestHandlers = {
     const allMessages = readSessionMessages(entry.sessionId, storePath, entry.sessionFile);
     const messages = limit < allMessages.length ? allMessages.slice(-limit) : allMessages;
     respond(true, { messages }, undefined);
+  },
+  "sessions.promptContext.get": ({ params, respond }) => {
+    if (
+      !assertValidParams(
+        params,
+        validateSessionsPromptContextGetParams,
+        "sessions.promptContext.get",
+        respond,
+      )
+    ) {
+      return;
+    }
+    const key = requireSessionKey((params as { key?: unknown }).key, respond);
+    if (!key) {
+      return;
+    }
+    const { entry, canonicalKey } = loadSessionEntry(key);
+    respond(true, buildPromptContextResponse({ key: canonicalKey, entry }), undefined);
+  },
+  "sessions.promptContext.skills.set": async ({ params, respond, context }) => {
+    if (
+      !assertValidParams(
+        params,
+        validateSessionsPromptContextSkillsSetParams,
+        "sessions.promptContext.skills.set",
+        respond,
+      )
+    ) {
+      return;
+    }
+    const key = requireSessionKey((params as { key?: unknown }).key, respond);
+    if (!key) {
+      return;
+    }
+    try {
+      const selectedSkillNames = normalizeSkillFilter(
+        (params as { selectedSkillNames?: unknown[] }).selectedSkillNames ?? [],
+      ) ?? [];
+      const selectionCustomized =
+        typeof (params as { selectionCustomized?: unknown }).selectionCustomized === "boolean"
+          ? ((params as { selectionCustomized: boolean }).selectionCustomized ?? false)
+          : true;
+      const updated = await updateSessionPromptContext({
+        key,
+        mutate: (entry) => ({
+          ...(entry ?? {
+            sessionId: randomUUID(),
+            updatedAt: Date.now(),
+          }),
+          updatedAt: Date.now(),
+          promptContext: buildUpdatedPromptContextForSkillSelection({
+            current: entry?.promptContext,
+            selectedSkillNames,
+            customized: selectionCustomized,
+          }),
+        }),
+      });
+      respond(
+        true,
+        buildPromptContextResponse({ key: updated.key, entry: updated.entry }),
+        undefined,
+      );
+      emitSessionsChanged(context, {
+        sessionKey: updated.key,
+        reason: "prompt-context-skills",
+      });
+    } catch (error) {
+      respond(
+        false,
+        undefined,
+        errorShape(
+          ErrorCodes.UNAVAILABLE,
+          error instanceof Error ? error.message : String(error),
+        ),
+      );
+    }
+  },
+  "sessions.promptContext.feedback": async ({ params, respond, context }) => {
+    if (
+      !assertValidParams(
+        params,
+        validateSessionsPromptContextFeedbackParams,
+        "sessions.promptContext.feedback",
+        respond,
+      )
+    ) {
+      return;
+    }
+    const key = requireSessionKey((params as { key?: unknown }).key, respond);
+    if (!key) {
+      return;
+    }
+    try {
+      const responseText =
+        typeof (params as { responseText?: unknown }).responseText === "string"
+          ? (params as { responseText: string }).responseText
+          : "";
+      const instructionText =
+        typeof (params as { instructionText?: unknown }).instructionText === "string"
+          ? (params as { instructionText: string }).instructionText
+          : "";
+      const feedback =
+        typeof (params as { feedback?: unknown }).feedback === "string"
+          ? (params as { feedback: string }).feedback
+          : "";
+      const rating = (params as { rating: "good" | "bad" }).rating;
+      const turn =
+        typeof (params as { turn?: unknown }).turn === "number"
+          ? (params as { turn: number }).turn
+          : null;
+      const summary = await summarizeFeedbackIntoImportantNote({
+        instructionText,
+        responseText,
+        rating,
+        feedback,
+      });
+      const record: SessionFeedbackRecord = {
+        id: randomUUID(),
+        createdAt: Date.now(),
+        rating,
+        ...(feedback.trim() ? { feedback } : {}),
+        ...(instructionText.trim() ? { instructionText } : {}),
+        ...(responseText.trim() ? { responseText } : {}),
+        ...(turn != null ? { turn } : {}),
+        ...(summary.trim() ? { summary } : {}),
+      };
+      const updated = await updateSessionPromptContext({
+        key,
+        mutate: (entry) => ({
+          ...(entry ?? {
+            sessionId: randomUUID(),
+            updatedAt: Date.now(),
+          }),
+          updatedAt: Date.now(),
+          promptContext: buildUpdatedPromptContextFromFeedback({
+            current: entry?.promptContext,
+            record,
+            noteSummary: summary,
+          }),
+        }),
+      });
+      respond(
+        true,
+        {
+          ok: true,
+          key: updated.key,
+          session_id: updated.entry.sessionId,
+          turn,
+          rating,
+          summary,
+          promptContext: buildPromptContextResponse({ key: updated.key, entry: updated.entry }),
+        },
+        undefined,
+      );
+      emitSessionsChanged(context, {
+        sessionKey: updated.key,
+        reason: "prompt-context-feedback",
+      });
+    } catch (error) {
+      respond(
+        false,
+        undefined,
+        errorShape(
+          ErrorCodes.UNAVAILABLE,
+          error instanceof Error ? error.message : String(error),
+        ),
+      );
+    }
+  },
+  "sessions.promptContext.compact": async ({ params, respond, context }) => {
+    if (
+      !assertValidParams(
+        params,
+        validateSessionsPromptContextCompactParams,
+        "sessions.promptContext.compact",
+        respond,
+      )
+    ) {
+      return;
+    }
+    const key = requireSessionKey((params as { key?: unknown }).key, respond);
+    if (!key) {
+      return;
+    }
+    try {
+      const { entry, canonicalKey, storePath } = loadSessionEntry(key);
+      if (!entry?.sessionId) {
+        respond(
+          false,
+          undefined,
+          errorShape(ErrorCodes.INVALID_REQUEST, `session not found: ${key}`),
+        );
+        return;
+      }
+      const messages = readSessionMessages(entry.sessionId, storePath, entry.sessionFile);
+      const summary = await summarizeConversationHistory({
+        messages,
+        instructions:
+          typeof (params as { instructions?: unknown }).instructions === "string"
+            ? (params as { instructions: string }).instructions
+            : undefined,
+      });
+      const source =
+        (params as { source?: "manual" | "auto" }).source === "auto" ? "auto" : "manual";
+      const updated = await updateSessionPromptContext({
+        key: canonicalKey,
+        mutate: (current) => ({
+          ...(current ?? entry),
+          updatedAt: Date.now(),
+          promptContext: buildUpdatedPromptContextForSummary({
+            current: current?.promptContext ?? entry.promptContext,
+            summary,
+            source,
+            tokenCount: entry.totalTokens,
+          }),
+        }),
+      });
+      respond(
+        true,
+        {
+          ok: true,
+          key: updated.key,
+          session_id: updated.entry.sessionId,
+          summary,
+          has_summary: Boolean(summary.trim()),
+          source,
+          promptContext: buildPromptContextResponse({ key: updated.key, entry: updated.entry }),
+        },
+        undefined,
+      );
+      emitSessionsChanged(context, {
+        sessionKey: updated.key,
+        reason: "prompt-context-compact",
+      });
+    } catch (error) {
+      respond(
+        false,
+        undefined,
+        errorShape(
+          ErrorCodes.UNAVAILABLE,
+          error instanceof Error ? error.message : String(error),
+        ),
+      );
+    }
   },
   "sessions.compact": async ({ params, respond, context }) => {
     if (!assertValidParams(params, validateSessionsCompactParams, "sessions.compact", respond)) {

@@ -247,6 +247,18 @@ describe("model-selection", () => {
         expected: { provider: "vercel-ai-gateway", model: "openai/gpt-5.2" },
       },
       {
+        name: "rewrites legacy metaclaw refs to the native deepseek provider",
+        variants: ["metaclaw/deepseek-chat", " metaclaw / foo "],
+        defaultProvider: "anthropic",
+        expected: { provider: "deepseek", model: "deepseek-chat" },
+      },
+      {
+        name: "preserves supported deepseek legacy reasoning refs",
+        variants: ["metaclaw/deepseek-reasoner"],
+        defaultProvider: "anthropic",
+        expected: { provider: "deepseek", model: "deepseek-reasoner" },
+      },
+      {
         name: "keeps already-suffixed codex variants unchanged",
         variants: ["openai/gpt-5.4-codex-codex"],
         defaultProvider: "anthropic",
@@ -732,6 +744,30 @@ describe("model-selection", () => {
       ]);
       const result = resolveConfiguredRefForTest(cfg);
       expect(result).toEqual({ provider: "anthropic", model: "claude-opus-4-6" });
+    });
+
+    it("rewrites legacy metaclaw default models to configured deepseek models", () => {
+      const cfg = {
+        ...createProviderWithModelsConfig("deepseek", [
+          {
+            id: "deepseek-chat",
+            name: "DeepSeek Chat",
+            reasoning: false,
+            input: ["text"],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            contextWindow: 131072,
+            maxTokens: 8192,
+          },
+        ]),
+        agents: {
+          defaults: {
+            model: { primary: "metaclaw/deepseek-chat" },
+          },
+        },
+      } as OpenClawConfig;
+
+      const result = resolveConfiguredRefForTest(cfg);
+      expect(result).toEqual({ provider: "deepseek", model: "deepseek-chat" });
     });
 
     it("can skip plugin-backed model normalization for display-only callers", () => {

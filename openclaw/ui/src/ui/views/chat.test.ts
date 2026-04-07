@@ -836,7 +836,7 @@ describe("chat view", () => {
     expect(senderLabels).toContain("Joaquin De Rojas");
   });
 
-  it("renders a MetaClaw Studio toggle above the chat", () => {
+  it("renders a Session Studio toggle above the chat", () => {
     const container = document.createElement("div");
     cleanupChatModuleState();
     try {
@@ -849,7 +849,7 @@ describe("chat view", () => {
         container,
       );
 
-      expect(container.textContent).toContain("Show MetaClaw Studio");
+      expect(container.textContent).toContain("Show Session Studio");
       expect(container.textContent).not.toContain("Pending Approvals");
       expect(container.textContent).not.toContain("Remember the last user preference.");
     } finally {
@@ -857,7 +857,7 @@ describe("chat view", () => {
     }
   });
 
-  it("toggles MetaClaw Studio open and closed from the header button", async () => {
+  it("toggles Session Studio open and closed from the header button", async () => {
     const container = document.createElement("div");
     cleanupChatModuleState();
     try {
@@ -878,26 +878,26 @@ describe("chat view", () => {
       rerender();
 
       const openButton = Array.from(container.querySelectorAll("button")).find((button) =>
-        button.textContent?.includes("Show MetaClaw Studio"),
+        button.textContent?.includes("Show Session Studio"),
       );
       expect(openButton).not.toBeUndefined();
       openButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       await flushTasks();
 
-      expect(container.textContent).toContain("Hide MetaClaw Studio");
+      expect(container.textContent).toContain("Hide Session Studio");
       expect(container.textContent).toContain("Pending Approvals");
       expect(container.textContent).toContain("Command Policy");
       expect(container.textContent).toContain("important-notes");
       expect(container.textContent).toContain("Remember the last user preference.");
 
       const closeButton = Array.from(container.querySelectorAll("button")).find((button) =>
-        button.textContent?.includes("Hide MetaClaw Studio"),
+        button.textContent?.includes("Hide Session Studio"),
       );
       expect(closeButton).not.toBeUndefined();
       closeButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       await flushTasks();
 
-      expect(container.textContent).toContain("Show MetaClaw Studio");
+      expect(container.textContent).toContain("Show Session Studio");
       expect(container.textContent).not.toContain("Pending Approvals");
       expect(container.textContent).not.toContain("Remember the last user preference.");
     } finally {
@@ -1289,7 +1289,7 @@ exec_command: rm -rf new`,
       rerender();
 
       const openButton = Array.from(container.querySelectorAll("button")).find((button) =>
-        button.textContent?.includes("Show MetaClaw Studio"),
+        button.textContent?.includes("Show Session Studio"),
       );
       openButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       await flushTasks();
@@ -1327,7 +1327,7 @@ exec_command: rm -rf new`,
       rerender();
 
       const openButton = Array.from(container.querySelectorAll("button")).find((button) =>
-        button.textContent?.includes("Show MetaClaw Studio"),
+        button.textContent?.includes("Show Session Studio"),
       );
       openButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       await flushTasks();

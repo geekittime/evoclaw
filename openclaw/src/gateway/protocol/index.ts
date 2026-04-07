@@ -210,6 +210,14 @@ import {
   SessionsMessagesUnsubscribeParamsSchema,
   type SessionsPatchParams,
   SessionsPatchParamsSchema,
+  type SessionsPromptContextCompactParams,
+  SessionsPromptContextCompactParamsSchema,
+  type SessionsPromptContextFeedbackParams,
+  SessionsPromptContextFeedbackParamsSchema,
+  type SessionsPromptContextGetParams,
+  SessionsPromptContextGetParamsSchema,
+  type SessionsPromptContextSkillsSetParams,
+  SessionsPromptContextSkillsSetParamsSchema,
   type SessionsPreviewParams,
   SessionsPreviewParamsSchema,
   type SessionsResetParams,
@@ -366,6 +374,15 @@ export const validateSessionsDeleteParams = ajv.compile<SessionsDeleteParams>(
 export const validateSessionsCompactParams = ajv.compile<SessionsCompactParams>(
   SessionsCompactParamsSchema,
 );
+export const validateSessionsPromptContextGetParams = ajv.compile<SessionsPromptContextGetParams>(
+  SessionsPromptContextGetParamsSchema,
+);
+export const validateSessionsPromptContextSkillsSetParams =
+  ajv.compile<SessionsPromptContextSkillsSetParams>(SessionsPromptContextSkillsSetParamsSchema);
+export const validateSessionsPromptContextFeedbackParams =
+  ajv.compile<SessionsPromptContextFeedbackParams>(SessionsPromptContextFeedbackParamsSchema);
+export const validateSessionsPromptContextCompactParams =
+  ajv.compile<SessionsPromptContextCompactParams>(SessionsPromptContextCompactParamsSchema);
 export const validateSessionsUsageParams =
   ajv.compile<SessionsUsageParams>(SessionsUsageParamsSchema);
 export const validateConfigGetParams = ajv.compile<ConfigGetParams>(ConfigGetParamsSchema);

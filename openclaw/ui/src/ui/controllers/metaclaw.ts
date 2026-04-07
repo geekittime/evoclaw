@@ -1,5 +1,9 @@
 import { CONTROL_UI_METACLAW_PROXY_PREFIX } from "../../../../src/gateway/control-ui-contract.js";
+import { resolveAgentIdFromSessionKey } from "../../../../src/routing/session-key.js";
+import type { GatewayBrowserClient } from "../gateway.ts";
 import { inferBasePathFromPathname, normalizeBasePath } from "../navigation.ts";
+import type { ExecApprovalRequest } from "./exec-approval.ts";
+import type { ExecApprovalsFile, ExecApprovalsSnapshot } from "./exec-approvals.ts";
 
 type MetaclawSettings = {
   apiBase: string;
@@ -88,6 +92,8 @@ export type MetaclawSectionsState = {
 };
 
 export type MetaclawState = {
+  client: GatewayBrowserClient | null;
+  connected: boolean;
   sessionKey: string;
   metaclawApiBase: string;
   metaclawToken: string;
@@ -104,6 +110,36 @@ export type MetaclawState = {
   metaclawPendingApprovals: MetaclawPendingApproval[];
   metaclawSandboxPolicy: MetaclawSandboxPolicy | null;
   metaclawSections: MetaclawSectionsState;
+  execApprovalQueue?: ExecApprovalRequest[];
+};
+
+type SessionsPromptContextGetResult = {
+  ok: boolean;
+  key: string;
+  selectedSkillNames?: string[];
+  selectionCustomized?: boolean;
+  latestInjectedSkills?: string[];
+  importantNotes?: MetaclawImportantNotes | null;
+  contextSummary?: MetaclawContextSummary | null;
+  feedbackRecords?: unknown[];
+  skillSelectionHistory?: unknown[];
+};
+
+type SessionsPromptContextFeedbackResult = {
+  ok: boolean;
+  key: string;
+  session_id: string;
+  turn: number | null;
+  rating: "good" | "bad";
+  summary: string;
+};
+
+type SkillsStatusResult = {
+  skills?: Array<{
+    name: string;
+    description: string;
+    source?: string;
+  }>;
 };
 
 const SETTINGS_KEY = "openclaw.control.metaclaw.v1";
@@ -146,6 +182,74 @@ export function createInitialMetaclawSectionsState(): MetaclawSectionsState {
     skills: createSectionState(),
     pendingApprovals: createSectionState(),
     sandboxPolicy: createSectionState(),
+  };
+}
+
+function resolveCurrentAgentId(sessionKey: string) {
+  return resolveAgentIdFromSessionKey(sessionKey) || "main";
+}
+
+function mapExecApprovalQueue(
+  queue: ExecApprovalRequest[] | undefined,
+  sessionKey: string,
+): MetaclawPendingApproval[] {
+  if (!Array.isArray(queue) || queue.length === 0) {
+    return [];
+  }
+  const relevant = queue.filter(
+    (entry) =>
+      entry.kind === "exec" &&
+      (!entry.request.sessionKey || entry.request.sessionKey === sessionKey),
+  );
+  if (relevant.length === 0) {
+    return [];
+  }
+  const latest = relevant[0]!;
+  return [
+    {
+      approval_id: latest.id,
+      session_id: latest.request.sessionKey ?? sessionKey,
+      status: "pending",
+      created_at: new Date(latest.createdAtMs).toISOString(),
+      updated_at: new Date(latest.createdAtMs).toISOString(),
+      decisions: [
+        {
+          tool_name: latest.kind === "plugin" ? latest.pluginTitle ?? "plugin" : "exec",
+          action: "ask",
+          reason: latest.request.security ?? latest.request.ask ?? "",
+          command: latest.request.command,
+          paths: latest.request.resolvedPath ? [latest.request.resolvedPath] : undefined,
+        },
+      ],
+    },
+  ];
+}
+
+function buildSandboxPolicyFromSnapshot(
+  snapshot: ExecApprovalsSnapshot | null,
+): MetaclawSandboxPolicy {
+  const file: ExecApprovalsFile = snapshot?.file ?? {};
+  return {
+    command_allowlist: [...(file.commandAllowlist ?? [])],
+    path_allowlist: [...(file.pathAllowlist ?? [])],
+    command_rules: { ...(file.commandRules ?? {}) },
+    default_command_mode: file.defaultCommandMode ?? "ask",
+    path_blocklist: [...(file.pathBlocklist ?? [])],
+  };
+}
+
+function applySandboxPolicyToApprovalsFile(
+  file: ExecApprovalsFile | undefined,
+  policy: MetaclawSandboxPolicy,
+): ExecApprovalsFile {
+  return {
+    ...(file ?? { version: 1 }),
+    version: 1,
+    commandAllowlist: [...policy.command_allowlist],
+    pathAllowlist: [...policy.path_allowlist],
+    pathBlocklist: [...policy.path_blocklist],
+    defaultCommandMode: policy.default_command_mode,
+    commandRules: { ...policy.command_rules },
   };
 }
 
@@ -428,49 +532,70 @@ function applyMutationError(state: MetaclawState, error: unknown) {
 }
 
 export async function loadMetaclawState(state: MetaclawState) {
+  if (!state.client || !state.connected) {
+    state.metaclawLoading = false;
+    state.metaclawConnected = false;
+    state.metaclawError = null;
+    state.metaclawSections = createInitialMetaclawSectionsState();
+    state.metaclawPendingApprovals = mapExecApprovalQueue(state.execApprovalQueue, state.sessionKey);
+    return;
+  }
   state.metaclawLoading = true;
   state.metaclawError = null;
 
   const sections = createInitialMetaclawSectionsState();
-  let connected = false;
+  let connected = state.connected;
 
   try {
-    const [skillsResult, pendingResult, policyResult] = await Promise.allSettled([
-      metaclawRequest<MetaclawSkillsPayload>(
-        state,
-        `/v1/skills?session_id=${encodeURIComponent(state.sessionKey)}`,
-      ),
-      metaclawRequest<{ pending: MetaclawPendingApproval[] }>(
-        state,
-        `/v1/sandbox/pending?session_id=${encodeURIComponent(state.sessionKey)}`,
-      ),
-      metaclawRequest<MetaclawSandboxPolicy>(state, "/v1/sandbox/whitelist"),
+    const [skillsStatusResult, promptContextResult, policyResult] = await Promise.allSettled([
+      state.client.request<SkillsStatusResult>("skills.status", {
+        agentId: resolveCurrentAgentId(state.sessionKey),
+      }),
+      state.client.request<SessionsPromptContextGetResult>("sessions.promptContext.get", {
+        key: state.sessionKey,
+      }),
+      state.client.request<ExecApprovalsSnapshot>("exec.approvals.get", {}),
     ]);
 
-    if (skillsResult.status === "fulfilled") {
-      updateSkillsState(state, skillsResult.value);
+    if (skillsStatusResult.status === "fulfilled" && promptContextResult.status === "fulfilled") {
+      const skillEntries = Array.isArray(skillsStatusResult.value.skills)
+        ? skillsStatusResult.value.skills
+            .map((skill) => ({
+              name: skill.name,
+              description: skill.description,
+              category: skill.source ?? "workspace",
+            }))
+            .sort((left, right) => left.name.localeCompare(right.name))
+        : [];
+      state.metaclawSkills = skillEntries;
+      state.metaclawSelectedSkillNames = Array.isArray(promptContextResult.value.selectedSkillNames)
+        ? promptContextResult.value.selectedSkillNames
+        : [];
+      state.metaclawSelectionCustomized = promptContextResult.value.selectionCustomized === true;
+      state.metaclawLatestInjectedSkills = Array.isArray(promptContextResult.value.latestInjectedSkills)
+        ? promptContextResult.value.latestInjectedSkills
+        : [];
+      state.metaclawImportantNotes = promptContextResult.value.importantNotes ?? null;
+      state.metaclawContextSummary = promptContextResult.value.contextSummary ?? null;
       sections.skills = createSectionState("ready");
       connected = true;
     } else {
-      const requestError = toMetaclawRequestError(skillsResult.reason);
+      const requestError = toMetaclawRequestError(
+        skillsStatusResult.status === "rejected" ? skillsStatusResult.reason : promptContextResult.reason,
+      );
       sections.skills = classifySectionError(requestError);
       connected ||= requestError.reachable;
     }
 
-    if (pendingResult.status === "fulfilled") {
-      state.metaclawPendingApprovals = retainLatestPendingApproval(
-        Array.isArray(pendingResult.value.pending) ? pendingResult.value.pending : [],
-      );
+    state.metaclawPendingApprovals = mapExecApprovalQueue(state.execApprovalQueue, state.sessionKey);
+    if (state.connected) {
       sections.pendingApprovals = createSectionState("ready");
-      connected = true;
     } else {
-      const requestError = toMetaclawRequestError(pendingResult.reason);
-      sections.pendingApprovals = classifySectionError(requestError);
-      connected ||= requestError.reachable;
+      sections.pendingApprovals = createSectionState("error", "OpenClaw gateway is disconnected.");
     }
 
     if (policyResult.status === "fulfilled") {
-      state.metaclawSandboxPolicy = policyResult.value ?? null;
+      state.metaclawSandboxPolicy = buildSandboxPolicyFromSnapshot(policyResult.value);
       sections.sandboxPolicy = createSectionState("ready");
       connected = true;
     } else {
@@ -491,20 +616,21 @@ export async function saveMetaclawSkillSelection(
   state: MetaclawState,
   skillNames: string[] | null,
 ) {
+  if (!state.client || !state.connected) {
+    throw new Error("OpenClaw gateway is not connected.");
+  }
   state.metaclawSaving = true;
   state.metaclawError = null;
   try {
-    await metaclawRequest<MetaclawSkillsPayload>(state, "/v1/skills/selection", {
-      method: "PUT",
-      body: JSON.stringify({
-        session_id: state.sessionKey,
-        skill_names: skillNames,
-      }),
+    await state.client.request("sessions.promptContext.skills.set", {
+      key: state.sessionKey,
+      selectedSkillNames: Array.isArray(skillNames) ? skillNames : [],
+      selectionCustomized: true,
     });
     await loadMetaclawState(state);
   } catch (error) {
-    applyMutationError(state, error);
-    throw toMetaclawRequestError(error);
+    state.metaclawError = error instanceof Error ? error.message : String(error);
+    throw error;
   } finally {
     state.metaclawSaving = false;
   }
@@ -514,23 +640,25 @@ export async function compactMetaclawConversationHistory(
   state: MetaclawState,
   messages: unknown[],
 ) {
+  if (!state.client || !state.connected) {
+    throw new Error("OpenClaw gateway is not connected.");
+  }
   state.metaclawSaving = true;
   state.metaclawError = null;
   try {
-    const normalizedMessages = Array.isArray(messages)
-      ? messages.filter((message) => message && typeof message === "object")
-      : [];
-    const result = await metaclawRequest<MetaclawContextSummaryResponse>(
-      state,
-      "/v1/context-summary/compact",
-      {
-        method: "POST",
-        body: JSON.stringify({
-          session_id: state.sessionKey,
-          messages: normalizedMessages,
-        }),
-      },
-    );
+    const result = await state.client.request<{
+      ok: boolean;
+      session_id: string;
+      summary: string;
+      has_summary: boolean;
+    }>("sessions.promptContext.compact", {
+      key: state.sessionKey,
+      source: "manual",
+      instructions:
+        Array.isArray(messages) && messages.length > 0
+          ? "Summarize the current chat for future continuation while keeping goals, files, approvals, and user preferences."
+          : undefined,
+    });
     state.metaclawContextSummary = {
       session_id: result.session_id,
       content: result.summary,
@@ -555,59 +683,33 @@ export async function submitMetaclawFeedback(
   instructionText: string,
   fallbackSessionIds: string[] = [],
 ) {
-  const attempts: Array<{ sessionId: string; turn: number | null }> = [];
-  const seen = new Set<string>();
-  const addAttempt = (sessionId: string, attemptTurn: number | null) => {
-    const normalizedSessionId = sessionId.trim();
-    if (!normalizedSessionId) {
-      return;
-    }
-    const key = `${normalizedSessionId}::${attemptTurn == null ? "none" : attemptTurn}`;
-    if (seen.has(key)) {
-      return;
-    }
-    seen.add(key);
-    attempts.push({ sessionId: normalizedSessionId, turn: attemptTurn });
+  void fallbackSessionIds;
+  const client = (state as MetaclawState & { client?: GatewayBrowserClient | null }).client;
+  const connected = (state as MetaclawState & { connected?: boolean }).connected;
+  if (!client || !connected) {
+    throw new Error("OpenClaw gateway is not connected.");
+  }
+  const result = await client.request<SessionsPromptContextFeedbackResult>(
+    "sessions.promptContext.feedback",
+    {
+      key: state.sessionKey,
+      turn,
+      rating,
+      feedback,
+      responseText,
+      instructionText,
+    },
+  );
+  return {
+    ok: result.ok,
+    session_id: result.session_id,
+    turn: result.turn ?? 0,
+    rating: result.rating,
+    skill_updated: true,
+    skill_name: "important-notes",
+    skill_description: "Durable notes compiled from answer feedback.",
+    skill_content: result.summary,
   };
-
-  addAttempt(state.sessionKey, turn);
-  if (turn != null) {
-    addAttempt(state.sessionKey, null);
-  }
-  for (const fallbackSessionId of fallbackSessionIds) {
-    addAttempt(fallbackSessionId, turn);
-    if (turn != null) {
-      addAttempt(fallbackSessionId, null);
-    }
-  }
-
-  let lastError: unknown = null;
-  for (const attempt of attempts) {
-    try {
-      return await metaclawRequest<MetaclawFeedbackResponse>(state, "/v1/feedback", {
-        method: "POST",
-        body: JSON.stringify({
-          session_id: attempt.sessionId,
-          turn: attempt.turn,
-          rating,
-          feedback,
-          response_text: responseText,
-          instruction_text: instructionText,
-        }),
-      });
-    } catch (error) {
-      const requestError = toMetaclawRequestError(error);
-      lastError = requestError;
-      const shouldRetry =
-        requestError.statusCode === 404 &&
-        requestError.message.toLowerCase().includes("target turn record not found");
-      if (!shouldRetry) {
-        throw requestError;
-      }
-    }
-  }
-
-  throw toMetaclawRequestError(lastError);
 }
 
 export async function resolveMetaclawApproval(
@@ -616,54 +718,21 @@ export async function resolveMetaclawApproval(
   decision: "approve" | "reject",
   fallbackSessionIds: string[] = [],
 ) {
+  void fallbackSessionIds;
+  if (!state.client || !state.connected) {
+    throw new Error("OpenClaw gateway is not connected.");
+  }
   state.metaclawSaving = true;
   state.metaclawError = null;
   try {
-    const attempts: string[] = [];
-    const seen = new Set<string>();
-    const addAttempt = (sessionId: string) => {
-      const normalized = sessionId.trim();
-      if (!normalized || seen.has(normalized)) {
-        return;
-      }
-      seen.add(normalized);
-      attempts.push(normalized);
-    };
-    addAttempt(state.sessionKey);
-    for (const fallbackSessionId of fallbackSessionIds) {
-      addAttempt(fallbackSessionId);
-    }
-
-    let lastError: unknown = null;
-    let resolved = false;
-    for (const sessionId of attempts) {
-      try {
-        await metaclawRequest(state, `/v1/sandbox/${decision}`, {
-          method: "POST",
-          body: JSON.stringify({
-            session_id: sessionId,
-            approval_id: approvalId,
-          }),
-        });
-        resolved = true;
-        break;
-      } catch (error) {
-        const requestError = toMetaclawRequestError(error);
-        lastError = requestError;
-        const shouldRetry =
-          requestError.statusCode === 404 &&
-          requestError.message.toLowerCase().includes("pending approval not found");
-        if (!shouldRetry) {
-          throw requestError;
-        }
-      }
-    }
-    if (!resolved) {
-      throw toMetaclawRequestError(lastError);
-    }
+    await state.client.request("exec.approval.resolve", {
+      id: approvalId,
+      decision: decision === "approve" ? "allow-once" : "deny",
+    });
     await loadMetaclawState(state);
   } catch (error) {
-    applyMutationError(state, error);
+    state.metaclawError = error instanceof Error ? error.message : String(error);
+    throw error;
   } finally {
     state.metaclawSaving = false;
   }
@@ -678,19 +747,14 @@ export async function waitForMetaclawApprovalResolution(
     pollIntervalMs?: number;
   } = {},
 ) {
+  void fallbackSessionIds;
   const timeoutMs = opts.timeoutMs ?? 2500;
   const pollIntervalMs = opts.pollIntervalMs ?? 250;
   const startedAt = Date.now();
 
   while (true) {
-    const pending = await fetchPendingApprovals(state, fallbackSessionIds);
-    state.metaclawPendingApprovals = retainLatestPendingApproval(pending);
-    state.metaclawSections = {
-      ...state.metaclawSections,
-      pendingApprovals: createSectionState("ready"),
-    };
-    state.metaclawConnected = true;
-    if (!pending.some((item) => item.approval_id === approvalId)) {
+    state.metaclawPendingApprovals = mapExecApprovalQueue(state.execApprovalQueue, state.sessionKey);
+    if (!state.metaclawPendingApprovals.some((item) => item.approval_id === approvalId)) {
       state.metaclawError = null;
       return;
     }
@@ -705,16 +769,22 @@ export async function saveMetaclawSandboxPolicy(
   state: MetaclawState,
   policy: MetaclawSandboxPolicy,
 ) {
+  if (!state.client || !state.connected) {
+    throw new Error("OpenClaw gateway is not connected.");
+  }
   state.metaclawSaving = true;
   state.metaclawError = null;
   try {
-    await metaclawRequest(state, "/v1/sandbox/policy", {
-      method: "PUT",
-      body: JSON.stringify(policy),
+    const snapshot = await state.client.request<ExecApprovalsSnapshot>("exec.approvals.get", {});
+    const file = applySandboxPolicyToApprovalsFile(snapshot.file, policy);
+    await state.client.request("exec.approvals.set", {
+      file,
+      baseHash: snapshot.hash,
     });
     await loadMetaclawState(state);
   } catch (error) {
-    applyMutationError(state, error);
+    state.metaclawError = error instanceof Error ? error.message : String(error);
+    throw error;
   } finally {
     state.metaclawSaving = false;
   }
@@ -725,19 +795,22 @@ export async function addMetaclawWhitelistEntry(
   type: "command" | "path",
   value: string,
 ) {
-  state.metaclawSaving = true;
-  state.metaclawError = null;
-  try {
-    await metaclawRequest(state, "/v1/sandbox/whitelist", {
-      method: "POST",
-      body: JSON.stringify({ type, value }),
-    });
-    await loadMetaclawState(state);
-  } catch (error) {
-    applyMutationError(state, error);
-  } finally {
-    state.metaclawSaving = false;
+  const nextValue = value.trim();
+  if (!nextValue) {
+    return;
   }
+  const current = state.metaclawSandboxPolicy ?? buildSandboxPolicyFromSnapshot(null);
+  const next: MetaclawSandboxPolicy =
+    type === "command"
+      ? {
+          ...current,
+          command_allowlist: [...new Set([...current.command_allowlist, nextValue])].sort(),
+        }
+      : {
+          ...current,
+          path_allowlist: [...new Set([...current.path_allowlist, nextValue])].sort(),
+        };
+  await saveMetaclawSandboxPolicy(state, next);
 }
 
 export async function removeMetaclawWhitelistEntry(
@@ -745,17 +818,16 @@ export async function removeMetaclawWhitelistEntry(
   type: "command" | "path",
   value: string,
 ) {
-  state.metaclawSaving = true;
-  state.metaclawError = null;
-  try {
-    await metaclawRequest(state, "/v1/sandbox/whitelist", {
-      method: "DELETE",
-      body: JSON.stringify({ type, value }),
-    });
-    await loadMetaclawState(state);
-  } catch (error) {
-    applyMutationError(state, error);
-  } finally {
-    state.metaclawSaving = false;
-  }
+  const current = state.metaclawSandboxPolicy ?? buildSandboxPolicyFromSnapshot(null);
+  const next: MetaclawSandboxPolicy =
+    type === "command"
+      ? {
+          ...current,
+          command_allowlist: current.command_allowlist.filter((entry) => entry !== value),
+        }
+      : {
+          ...current,
+          path_allowlist: current.path_allowlist.filter((entry) => entry !== value),
+        };
+  await saveMetaclawSandboxPolicy(state, next);
 }

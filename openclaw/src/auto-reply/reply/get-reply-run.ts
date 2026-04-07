@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { resolveSessionAuthProfileOverride } from "../../agents/auth-profiles/session-override.js";
+import { matchesSkillFilter } from "../../agents/skills/filter.js";
 import type { ExecToolDefaults } from "../../agents/bash-tools.js";
 import { resolveFastModeState } from "../../agents/fast-mode.js";
 import type { OpenClawConfig } from "../../config/config.js";
@@ -12,6 +13,12 @@ import type { SessionEntry } from "../../config/sessions/types.js";
 import { logVerbose } from "../../globals.js";
 import { clearCommandLane, getQueueSize } from "../../process/command-queue.js";
 import { normalizeMainKey } from "../../routing/session-key.js";
+import {
+  buildSessionPromptContextAddition,
+  buildUpdatedPromptContextForSummary,
+  resolveSessionSelectedSkillNames,
+  shouldAutoRefreshContextSummary,
+} from "../../sessions/prompt-context.js";
 import { isReasoningTagProvider } from "../../utils/provider-utils.js";
 import { hasControlCommand } from "../command-detection.js";
 import { resolveEnvelopeFormatOptions } from "../envelope.js";
@@ -43,6 +50,8 @@ import { resolveTypingMode } from "./typing-mode.js";
 import { resolveRunTypingPolicy } from "./typing-policy.js";
 import type { TypingController } from "./typing.js";
 import { appendUntrustedContext } from "./untrusted-context.js";
+import { summarizeConversationHistory } from "../../gateway/session-prompt-context.js";
+import { readSessionMessages } from "../../gateway/session-utils.js";
 
 type AgentDefaults = NonNullable<OpenClawConfig["agents"]>["defaults"];
 type ExecOverrides = Pick<ExecToolDefaults, "host" | "security" | "ask" | "node">;
@@ -397,6 +406,7 @@ export async function runPreparedReply(
     : threadStarterBody
       ? `[Thread starter - for context]\n${threadStarterBody}`
       : undefined;
+  const sessionSkillFilter = resolveSessionSelectedSkillNames(sessionEntry) ?? opts?.skillFilter;
   const skillResult =
     process.env.OPENCLAW_TEST_FAST === "1"
       ? {
@@ -415,12 +425,53 @@ export async function runPreparedReply(
             isFirstTurnInSession,
             workspaceDir,
             cfg,
-            skillFilter: opts?.skillFilter,
+            skillFilter: sessionSkillFilter,
           });
         })();
   sessionEntry = skillResult.sessionEntry ?? sessionEntry;
   currentSystemSent = skillResult.systemSent;
-  const skillsSnapshot = skillResult.skillsSnapshot;
+  let skillsSnapshot = skillResult.skillsSnapshot;
+  if (
+    !process.env.OPENCLAW_TEST_FAST &&
+    sessionEntry?.skillsSnapshot &&
+    !matchesSkillFilter(sessionEntry.skillsSnapshot.skillFilter, sessionSkillFilter)
+  ) {
+    skillsSnapshot = undefined;
+  }
+  if (
+    !process.env.OPENCLAW_TEST_FAST &&
+    sessionEntry?.sessionId &&
+    storePath &&
+    sessionStore &&
+    sessionKey &&
+    shouldAutoRefreshContextSummary({ entry: sessionEntry })
+  ) {
+    const summary = await summarizeConversationHistory({
+      messages: readSessionMessages(sessionEntry.sessionId, storePath, sessionEntry.sessionFile),
+      instructions:
+        "Compress the conversation for continuation inside OpenClaw. Preserve active goals, operator preferences, approvals/denials, files, and unresolved next steps.",
+    });
+    const promptContext = buildUpdatedPromptContextForSummary({
+      current: sessionEntry.promptContext,
+      summary,
+      source: "auto",
+      tokenCount: sessionEntry.totalTokens,
+    });
+    sessionEntry = {
+      ...sessionEntry,
+      updatedAt: Date.now(),
+      promptContext,
+    };
+    sessionStore[sessionKey] = sessionEntry;
+    const { updateSessionStore } = await loadSessionStoreRuntime();
+    await updateSessionStore(storePath, (store) => {
+      store[sessionKey] = sessionEntry!;
+    });
+  }
+  const promptContextAddition = buildSessionPromptContextAddition(sessionEntry);
+  if (promptContextAddition) {
+    extraSystemPromptParts.push(promptContextAddition);
+  }
   const prefixedBody = [threadContextNote, prefixedBodyBase].filter(Boolean).join("\n\n");
   const mediaNote = buildInboundMediaNote(ctx);
   const mediaReplyHint = mediaNote

@@ -1,18 +1,76 @@
 /* @vitest-environment jsdom */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { GatewayBrowserClient } from "../gateway.ts";
+import type { ExecApprovalRequest } from "./exec-approval.ts";
+import type { ExecApprovalsSnapshot } from "./exec-approvals.ts";
 import {
   compactMetaclawConversationHistory,
   createInitialMetaclawSectionsState,
   loadMetaclawState,
   resolveMetaclawApproval,
+  saveMetaclawSandboxPolicy,
+  saveMetaclawSkillSelection,
   submitMetaclawFeedback,
   waitForMetaclawApprovalResolution,
   type MetaclawState,
 } from "./metaclaw.ts";
 
-function createState(): MetaclawState {
+function createExecSnapshot(
+  overrides: Partial<ExecApprovalsSnapshot> = {},
+): ExecApprovalsSnapshot {
   return {
+    path: "/tmp/exec-approvals.json",
+    exists: true,
+    hash: "hash-1",
+    file: {
+      version: 1,
+      commandAllowlist: ["pwd"],
+      pathAllowlist: ["/workspace/tmp"],
+      pathBlocklist: ["/secret"],
+      defaultCommandMode: "ask",
+      commandRules: { rm: "deny" },
+    },
+    ...overrides,
+  };
+}
+
+function createExecApproval(
+  id: string,
+  command: string,
+  createdAtMs: number,
+  sessionKey = "agent:main:main",
+): ExecApprovalRequest {
+  return {
+    id,
+    kind: "exec",
+    createdAtMs,
+    expiresAtMs: createdAtMs + 60_000,
+    request: {
+      command,
+      sessionKey,
+      security: "full",
+      ask: "always",
+      resolvedPath: "/usr/bin/sh",
+    },
+  };
+}
+
+function createClient(
+  handler: (method: string, params: Record<string, unknown>) => Promise<unknown> | unknown,
+): GatewayBrowserClient {
+  return {
+    request: vi.fn(async (method: string, params: Record<string, unknown>) => handler(method, params)),
+  } as unknown as GatewayBrowserClient;
+}
+
+function createState(
+  overrides: Partial<MetaclawState> = {},
+  handler?: (method: string, params: Record<string, unknown>) => Promise<unknown> | unknown,
+): MetaclawState {
+  return {
+    client: handler ? createClient(handler) : null,
+    connected: handler ? true : false,
     sessionKey: "agent:main:main",
     metaclawApiBase: "http://127.0.0.1:30000",
     metaclawToken: "",
@@ -29,176 +87,174 @@ function createState(): MetaclawState {
     metaclawPendingApprovals: [],
     metaclawSandboxPolicy: null,
     metaclawSections: createInitialMetaclawSectionsState(),
+    execApprovalQueue: [],
+    ...overrides,
   };
 }
 
-function jsonResponse(body: unknown, init?: ResponseInit): Response {
-  return new Response(JSON.stringify(body), {
-    status: init?.status ?? 200,
-    headers: {
-      "Content-Type": "application/json; charset=utf-8",
-      ...(init?.headers ?? {}),
-    },
-  });
-}
-
-describe("loadMetaclawState", () => {
-  beforeEach(() => {
-    window.history.replaceState({}, "", "/openclaw/chat");
-    Object.defineProperty(window, "__OPENCLAW_CONTROL_UI_BASE_PATH__", {
-      configurable: true,
-      value: "/openclaw",
-      writable: true,
-    });
-  });
-
-  it("keeps MetaClaw connected when only sandbox sections are unavailable", async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      if (url.endsWith("/openclaw/__openclaw/metaclaw/v1/skills?session_id=agent%3Amain%3Amain")) {
-        const headers = new Headers(init?.headers);
-        expect(headers.get("Content-Type")).toBeNull();
-        expect(headers.get("Accept")).toBe("application/json");
-        expect(headers.get("X-OpenClaw-MetaClaw-Upstream")).toBe("http://127.0.0.1:30000");
-        return jsonResponse({
-          skills: [{ name: "security-triage", description: "desc", category: "security" }],
-          selection_customized: false,
-          selected_skill_names: [],
-          latest_injected_skills: ["security-triage"],
-          important_notes: {
-            name: "important-notes",
-            description: "notes",
-            content: "Remember the operator preference.",
-          },
-        });
+describe("metaclaw controller in native OpenClaw mode", () => {
+  it("loads skills, notes, summary, approvals, and sandbox policy through OpenClaw RPC", async () => {
+    const state = createState({}, async (method) => {
+      switch (method) {
+        case "skills.status":
+          return {
+            skills: [
+              { name: "security-triage", description: "desc", source: "workspace" },
+              { name: "code-review", description: "desc", source: "workspace" },
+            ],
+          };
+        case "sessions.promptContext.get":
+          return {
+            ok: true,
+            key: "agent:main:main",
+            selectedSkillNames: ["security-triage"],
+            selectionCustomized: true,
+            latestInjectedSkills: ["security-triage"],
+            importantNotes: {
+              name: "important-notes",
+              description: "notes",
+              content: "Remember the last user preference.",
+            },
+            contextSummary: {
+              session_id: "agent:main:main",
+              content: "Compressed summary of the chat so far.",
+              has_summary: true,
+            },
+          };
+        case "exec.approvals.get":
+          return createExecSnapshot();
+        default:
+          throw new Error(`Unexpected request: ${method}`);
       }
-      if (
-        url.endsWith(
-          "/openclaw/__openclaw/metaclaw/v1/sandbox/pending?session_id=agent%3Amain%3Amain",
-        )
-      ) {
-        return jsonResponse({ detail: "sandbox approvals are not enabled" }, { status: 503 });
-      }
-      if (url.endsWith("/openclaw/__openclaw/metaclaw/v1/sandbox/whitelist")) {
-        return jsonResponse({ detail: "sandbox whitelist is not enabled" }, { status: 503 });
-      }
-      throw new Error(`Unexpected URL: ${url}`);
     });
 
-    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+    state.execApprovalQueue = [createExecApproval("appr-1", "rm -rf /tmp/demo", 2_000)];
 
-    const state = createState();
     await loadMetaclawState(state);
 
     expect(state.metaclawConnected).toBe(true);
     expect(state.metaclawError).toBeNull();
-    expect(state.metaclawSkills).toHaveLength(1);
-    expect(state.metaclawImportantNotes?.name).toBe("important-notes");
+    expect(state.metaclawSkills.map((skill) => skill.name)).toEqual([
+      "code-review",
+      "security-triage",
+    ]);
+    expect(state.metaclawSelectedSkillNames).toEqual(["security-triage"]);
+    expect(state.metaclawImportantNotes?.content).toContain("Remember the last user preference.");
+    expect(state.metaclawContextSummary?.content).toContain("Compressed summary");
+    expect(state.metaclawSandboxPolicy).toEqual({
+      command_allowlist: ["pwd"],
+      path_allowlist: ["/workspace/tmp"],
+      command_rules: { rm: "deny" },
+      default_command_mode: "ask",
+      path_blocklist: ["/secret"],
+    });
+    expect(state.metaclawPendingApprovals.map((item) => item.approval_id)).toEqual(["appr-1"]);
     expect(state.metaclawSections.skills.status).toBe("ready");
-    expect(state.metaclawSections.pendingApprovals.status).toBe("unavailable");
-    expect(state.metaclawSections.sandboxPolicy.status).toBe("unavailable");
-
-    vi.unstubAllGlobals();
+    expect(state.metaclawSections.pendingApprovals.status).toBe("ready");
+    expect(state.metaclawSections.sandboxPolicy.status).toBe("ready");
   });
 
-  it("reports gateway proxy reachability when fetch fails before a response arrives", async () => {
-    const fetchMock = vi.fn().mockRejectedValue(new TypeError("Failed to fetch"));
-    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+  it("falls back to empty local state when the OpenClaw gateway is disconnected", async () => {
+    const state = createState({
+      connected: false,
+      execApprovalQueue: [createExecApproval("appr-offline", "pwd", 1_000)],
+    });
 
-    const state = createState();
     await loadMetaclawState(state);
 
     expect(state.metaclawConnected).toBe(false);
-    expect(state.metaclawError).toContain("Unable to reach MetaClaw via gateway proxy");
-    expect(state.metaclawSections.skills.status).toBe("error");
-
-    vi.unstubAllGlobals();
+    expect(state.metaclawError).toBeNull();
+    expect(state.metaclawSections).toEqual(createInitialMetaclawSectionsState());
+    expect(state.metaclawPendingApprovals.map((item) => item.approval_id)).toEqual([
+      "appr-offline",
+    ]);
   });
 
-  it("keeps only the latest pending approval in UI state", async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.endsWith("/openclaw/__openclaw/metaclaw/v1/skills?session_id=agent%3Amain%3Amain")) {
-        return jsonResponse({
-          skills: [],
-          selection_customized: true,
-          selected_skill_names: [],
-          latest_injected_skills: [],
-          important_notes: null,
-        });
+  it("surfaces only the newest exec approval for the current session", async () => {
+    const state = createState({}, async (method) => {
+      switch (method) {
+        case "skills.status":
+          return { skills: [] };
+        case "sessions.promptContext.get":
+          return { ok: true, key: "agent:main:main" };
+        case "exec.approvals.get":
+          return createExecSnapshot();
+        default:
+          throw new Error(`Unexpected request: ${method}`);
       }
-      if (
-        url.endsWith(
-          "/openclaw/__openclaw/metaclaw/v1/sandbox/pending?session_id=agent%3Amain%3Amain",
-        )
-      ) {
-        return jsonResponse({
-          pending: [
-            {
-              approval_id: "appr_old",
-              session_id: "agent:main:main",
-              status: "pending",
-              created_at: "2026-04-06 18:00:00",
-              updated_at: "2026-04-06 18:00:00",
-            },
-            {
-              approval_id: "appr_new",
-              session_id: "agent:main:main",
-              status: "pending",
-              created_at: "2026-04-06 18:01:00",
-              updated_at: "2026-04-06 18:01:00",
-            },
-          ],
-        });
-      }
-      if (url.endsWith("/openclaw/__openclaw/metaclaw/v1/sandbox/whitelist")) {
-        return jsonResponse({
-          command_allowlist: [],
-          path_allowlist: [],
-          command_rules: {},
-          default_command_mode: "ask",
-          path_blocklist: [],
-        });
-      }
-      throw new Error(`Unexpected URL: ${url}`);
     });
+    state.execApprovalQueue = [
+      createExecApproval("appr-new", "rm -rf /tmp/new", 2_000),
+      createExecApproval("appr-old", "rm -rf /tmp/old", 1_000),
+      createExecApproval("appr-other-session", "pwd", 3_000, "agent:other:main"),
+    ];
 
-    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
-
-    const state = createState();
     await loadMetaclawState(state);
 
     expect(state.metaclawPendingApprovals).toHaveLength(1);
-    expect(state.metaclawPendingApprovals[0]?.approval_id).toBe("appr_new");
+    expect(state.metaclawPendingApprovals[0]?.approval_id).toBe("appr-new");
+  });
 
-    vi.unstubAllGlobals();
+  it("persists user-selected skills through the prompt-context RPC", async () => {
+    const state = createState({}, async (method, params) => {
+      switch (method) {
+        case "sessions.promptContext.skills.set":
+          expect(params).toEqual({
+            key: "agent:main:main",
+            selectedSkillNames: ["code-review", "security-triage"],
+            selectionCustomized: true,
+          });
+          return { ok: true };
+        case "skills.status":
+          return {
+            skills: [
+              { name: "security-triage", description: "desc", source: "workspace" },
+              { name: "code-review", description: "desc", source: "workspace" },
+            ],
+          };
+        case "sessions.promptContext.get":
+          return {
+            ok: true,
+            key: "agent:main:main",
+            selectedSkillNames: ["code-review", "security-triage"],
+            selectionCustomized: true,
+            latestInjectedSkills: ["code-review", "security-triage"],
+          };
+        case "exec.approvals.get":
+          return createExecSnapshot();
+        default:
+          throw new Error(`Unexpected request: ${method}`);
+      }
+    });
+
+    await saveMetaclawSkillSelection(state, ["code-review", "security-triage"]);
+
+    expect(state.metaclawSelectedSkillNames).toEqual(["code-review", "security-triage"]);
+    expect(state.metaclawLatestInjectedSkills).toEqual(["code-review", "security-triage"]);
+    expect(state.metaclawSelectionCustomized).toBe(true);
   });
 
   it("includes instruction text when submitting answer feedback", async () => {
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
-      expect(body).toMatchObject({
-        session_id: "agent:main:main",
+    const state = createState({}, async (method, params) => {
+      expect(method).toBe("sessions.promptContext.feedback");
+      expect(params).toEqual({
+        key: "agent:main:main",
         turn: 7,
         rating: "bad",
         feedback: "Needs to greet first.",
-        response_text: "What would you like to work on today?",
-        instruction_text: "hi",
+        responseText: "What would you like to work on today?",
+        instructionText: "hi",
       });
-      return jsonResponse({
+      return {
         ok: true,
+        key: "agent:main:main",
         session_id: "agent:main:main",
         turn: 7,
         rating: "bad",
-        skill_updated: true,
-        skill_name: "important-notes",
-        skill_description: "notes",
-        skill_content: "Remember to greet first.",
-      });
+        summary: "Start with a brief greeting when the user says hi.",
+      };
     });
-    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
 
-    const state = createState();
     const result = await submitMetaclawFeedback(
       state,
       7,
@@ -209,62 +265,43 @@ describe("loadMetaclawState", () => {
     );
 
     expect(result.ok).toBe(true);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-
-    vi.unstubAllGlobals();
+    expect(result.skill_content).toContain("brief greeting");
   });
 
-  it("compacts visible chat history into the session context summary", async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      if (url.endsWith("/openclaw/__openclaw/metaclaw/v1/context-summary/compact")) {
-        const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
-        expect(body).toMatchObject({
-          session_id: "agent:main:main",
-        });
-        expect(Array.isArray(body.messages)).toBe(true);
-        return jsonResponse({
-          ok: true,
-          session_id: "agent:main:main",
-          summary: "Compressed summary text.",
-          has_summary: true,
-        });
-      }
-      if (url.endsWith("/openclaw/__openclaw/metaclaw/v1/skills?session_id=agent%3Amain%3Amain")) {
-        return jsonResponse({
-          skills: [],
-          selection_customized: true,
-          selected_skill_names: [],
-          latest_injected_skills: [],
-          important_notes: null,
-          context_summary: {
+  it("compacts the current session transcript into stored context summary", async () => {
+    const state = createState({}, async (method, params) => {
+      switch (method) {
+        case "sessions.promptContext.compact":
+          expect(params).toMatchObject({
+            key: "agent:main:main",
+            source: "manual",
+          });
+          return {
+            ok: true,
+            key: "agent:main:main",
             session_id: "agent:main:main",
-            content: "Compressed summary text.",
+            summary: "Compressed summary text.",
             has_summary: true,
-          },
-        });
+          };
+        case "skills.status":
+          return { skills: [] };
+        case "sessions.promptContext.get":
+          return {
+            ok: true,
+            key: "agent:main:main",
+            contextSummary: {
+              session_id: "agent:main:main",
+              content: "Compressed summary text.",
+              has_summary: true,
+            },
+          };
+        case "exec.approvals.get":
+          return createExecSnapshot();
+        default:
+          throw new Error(`Unexpected request: ${method}`);
       }
-      if (
-        url.endsWith(
-          "/openclaw/__openclaw/metaclaw/v1/sandbox/pending?session_id=agent%3Amain%3Amain",
-        )
-      ) {
-        return jsonResponse({ pending: [] });
-      }
-      if (url.endsWith("/openclaw/__openclaw/metaclaw/v1/sandbox/whitelist")) {
-        return jsonResponse({
-          command_allowlist: [],
-          path_allowlist: [],
-          command_rules: {},
-          default_command_mode: "ask",
-          path_blocklist: [],
-        });
-      }
-      throw new Error(`Unexpected URL: ${url}`);
     });
-    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
 
-    const state = createState();
     const result = await compactMetaclawConversationHistory(state, [
       { role: "user", content: "Please summarize this discussion." },
       { role: "assistant", content: "Here is the latest result." },
@@ -272,154 +309,90 @@ describe("loadMetaclawState", () => {
 
     expect(result.summary).toBe("Compressed summary text.");
     expect(state.metaclawContextSummary?.content).toBe("Compressed summary text.");
-
-    vi.unstubAllGlobals();
   });
 
-  it("retries feedback against fallback MetaClaw sessions when the primary session has no turn record", async () => {
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
-      if (body.session_id === "agent:main:main" && body.turn === 7) {
-        return jsonResponse({ detail: "target turn record not found" }, { status: 404 });
+  it("saves command and path policy through exec approvals storage", async () => {
+    let savedSnapshot = createExecSnapshot();
+    const state = createState({}, async (method, params) => {
+      switch (method) {
+        case "exec.approvals.get":
+          return savedSnapshot;
+        case "exec.approvals.set":
+          expect(params).toEqual({
+            file: {
+              version: 1,
+              commandAllowlist: ["ls", "pwd"],
+              pathAllowlist: ["/workspace/tmp"],
+              pathBlocklist: ["/secret", "/tmp/private"],
+              defaultCommandMode: "ask",
+              commandRules: { rm: "deny", ls: "allow" },
+            },
+            baseHash: "hash-1",
+          });
+          savedSnapshot = createExecSnapshot({
+            hash: "hash-2",
+            file: (params as { file: ExecApprovalsSnapshot["file"] }).file,
+          });
+          return { ok: true };
+        case "skills.status":
+          return { skills: [] };
+        case "sessions.promptContext.get":
+          return { ok: true, key: "agent:main:main" };
+        default:
+          throw new Error(`Unexpected request: ${method}`);
       }
-      if (body.session_id === "agent:main:main" && body.turn === null) {
-        return jsonResponse({ detail: "target turn record not found" }, { status: 404 });
-      }
-      expect(body).toMatchObject({
-        session_id: "tui-deepseek-chat",
-        turn: 7,
-        rating: "good",
-        feedback: "Good answer.",
-      });
-      return jsonResponse({
-        ok: true,
-        session_id: "tui-deepseek-chat",
-        turn: 7,
-        rating: "good",
-        skill_updated: true,
-        skill_name: "important-notes",
-        skill_description: "notes",
-        skill_content: "Remember the last preference.",
-      });
     });
-    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
 
-    const state = createState();
-    const result = await submitMetaclawFeedback(
-      state,
-      7,
-      "good",
-      "Good answer.",
-      "Hi there.",
-      "hi",
-      ["tui-deepseek-chat"],
-    );
+    await saveMetaclawSandboxPolicy(state, {
+      command_allowlist: ["ls", "pwd"],
+      path_allowlist: ["/workspace/tmp"],
+      command_rules: { rm: "deny", ls: "allow" },
+      default_command_mode: "ask",
+      path_blocklist: ["/secret", "/tmp/private"],
+    });
 
-    expect(result.session_id).toBe("tui-deepseek-chat");
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-
-    vi.unstubAllGlobals();
+    expect(state.metaclawSandboxPolicy).toEqual({
+      command_allowlist: ["ls", "pwd"],
+      path_allowlist: ["/workspace/tmp"],
+      command_rules: { rm: "deny", ls: "allow" },
+      default_command_mode: "ask",
+      path_blocklist: ["/secret", "/tmp/private"],
+    });
   });
 
-  it("retries approval resolution against fallback MetaClaw sessions when the primary session has no pending record", async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      if (url.endsWith("/openclaw/__openclaw/metaclaw/v1/sandbox/approve")) {
-        const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
-        if (body.session_id === "agent:main:main") {
-          return jsonResponse({ detail: "pending approval not found" }, { status: 404 });
-        }
-        expect(body).toMatchObject({
-          session_id: "tui-deepseek-chat",
-          approval_id: "appr_505b16cb41c5",
-        });
-        return jsonResponse({ ok: true });
+  it("resolves approvals through native exec.approval.resolve and waits for queue removal", async () => {
+    let resolveCalls = 0;
+    const state = createState({}, async (method, params) => {
+      switch (method) {
+        case "exec.approval.resolve":
+          resolveCalls += 1;
+          expect(params).toEqual({
+            id: "appr_505b16cb41c5",
+            decision: "allow-once",
+          });
+          state.execApprovalQueue = [];
+          return { ok: true };
+        case "skills.status":
+          return { skills: [] };
+        case "sessions.promptContext.get":
+          return { ok: true, key: "agent:main:main" };
+        case "exec.approvals.get":
+          return createExecSnapshot();
+        default:
+          throw new Error(`Unexpected request: ${method}`);
       }
-      if (url.endsWith("/openclaw/__openclaw/metaclaw/v1/skills?session_id=agent%3Amain%3Amain")) {
-        return jsonResponse({
-          skills: [{ name: "security-triage", description: "desc", category: "security" }],
-          selection_customized: true,
-          selected_skill_names: ["security-triage"],
-          latest_injected_skills: ["security-triage"],
-          important_notes: {
-            name: "important-notes",
-            description: "notes",
-            content: "Remember the operator preference.",
-          },
-        });
-      }
-      if (
-        url.endsWith(
-          "/openclaw/__openclaw/metaclaw/v1/sandbox/pending?session_id=agent%3Amain%3Amain",
-        )
-      ) {
-        return jsonResponse({ pending: [] });
-      }
-      if (url.endsWith("/openclaw/__openclaw/metaclaw/v1/sandbox/whitelist")) {
-        return jsonResponse({
-          command_allowlist: [],
-          path_allowlist: [],
-          command_rules: {},
-          default_command_mode: "ask",
-          path_blocklist: [],
-        });
-      }
-      throw new Error(`Unexpected URL: ${url}`);
     });
-    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+    state.execApprovalQueue = [
+      createExecApproval("appr_505b16cb41c5", "rm -rf /tmp/demo", 1_000),
+    ];
 
-    const state = createState();
-    await resolveMetaclawApproval(
-      state,
-      "appr_505b16cb41c5",
-      "approve",
-      ["tui-deepseek-chat"],
-    );
-
-    expect(state.metaclawError).toBeNull();
-    expect(fetchMock).toHaveBeenCalled();
-
-    vi.unstubAllGlobals();
-  });
-
-  it("waits until an inline approval disappears from pending state before succeeding", async () => {
-    let pendingCalls = 0;
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (
-        url.endsWith(
-          "/openclaw/__openclaw/metaclaw/v1/sandbox/pending?session_id=agent%3Amain%3Amain",
-        )
-      ) {
-        pendingCalls += 1;
-        return jsonResponse({
-          pending:
-            pendingCalls === 1
-              ? [
-                  {
-                    approval_id: "appr_pending",
-                    session_id: "agent:main:main",
-                    status: "pending",
-                    created_at: "2026-04-07 10:00:00",
-                    updated_at: "2026-04-07 10:00:00",
-                  },
-                ]
-              : [],
-        });
-      }
-      throw new Error(`Unexpected URL: ${url}`);
-    });
-    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
-
-    const state = createState();
-    await waitForMetaclawApprovalResolution(state, "appr_pending", [], {
-      timeoutMs: 1000,
+    await resolveMetaclawApproval(state, "appr_505b16cb41c5", "approve");
+    await waitForMetaclawApprovalResolution(state, "appr_505b16cb41c5", [], {
+      timeoutMs: 100,
       pollIntervalMs: 0,
     });
 
+    expect(resolveCalls).toBe(1);
     expect(state.metaclawPendingApprovals).toEqual([]);
-    expect(pendingCalls).toBe(2);
-
-    vi.unstubAllGlobals();
   });
 });

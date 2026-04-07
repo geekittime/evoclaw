@@ -44,6 +44,7 @@ import {
   resolveAgentSkillsFilter,
   resolveAgentWorkspaceDir,
 } from "./agent-scope.js";
+import { matchesSkillFilter } from "./skills/filter.js";
 import { ensureAuthProfileStore } from "./auth-profiles.js";
 import { clearSessionAuthProfileOverride } from "./auth-profiles/session-override.js";
 import {
@@ -82,6 +83,14 @@ import { getSkillsSnapshotVersion } from "./skills/refresh.js";
 import { normalizeSpawnedRunMetadata } from "./spawned-context.js";
 import { resolveAgentTimeoutMs } from "./timeout.js";
 import { ensureAgentWorkspace } from "./workspace.js";
+import {
+  buildSessionPromptContextAddition,
+  buildUpdatedPromptContextForSummary,
+  resolveSessionSelectedSkillNames,
+  shouldAutoRefreshContextSummary,
+} from "../sessions/prompt-context.js";
+import { summarizeConversationHistory } from "../gateway/session-prompt-context.js";
+import { readSessionMessages } from "../gateway/session-utils.js";
 
 const log = createSubsystemLogger("agents/agent-command");
 
@@ -497,15 +506,19 @@ async function agentCommandInternal(
       });
     }
 
-    const needsSkillsSnapshot = isNewSession || !sessionEntry?.skillsSnapshot;
+    const sessionSkillFilter =
+      resolveSessionSelectedSkillNames(sessionEntry) ?? resolveAgentSkillsFilter(cfg, sessionAgentId);
+    const needsSkillsSnapshot =
+      isNewSession ||
+      !sessionEntry?.skillsSnapshot ||
+      !matchesSkillFilter(sessionEntry.skillsSnapshot.skillFilter, sessionSkillFilter);
     const skillsSnapshotVersion = getSkillsSnapshotVersion(workspaceDir);
-    const skillFilter = resolveAgentSkillsFilter(cfg, sessionAgentId);
     const skillsSnapshot = needsSkillsSnapshot
       ? buildWorkspaceSkillSnapshot(workspaceDir, {
           config: cfg,
           eligibility: { remote: getRemoteSkillEligibility() },
           snapshotVersion: skillsSnapshotVersion,
-          skillFilter,
+          skillFilter: sessionSkillFilter,
         })
       : sessionEntry?.skillsSnapshot;
 
@@ -725,6 +738,38 @@ async function agentCommandInternal(
       sessionFile = resolvedSessionFile.sessionFile;
       sessionEntry = resolvedSessionFile.sessionEntry;
     }
+    if (sessionEntry && storePath && shouldAutoRefreshContextSummary({ entry: sessionEntry })) {
+      const summary = await summarizeConversationHistory({
+        messages: readSessionMessages(sessionEntry.sessionId, storePath, sessionEntry.sessionFile),
+        instructions:
+          "Compress the conversation for continuation inside OpenClaw. Preserve active goals, operator preferences, approvals/denials, files, and unresolved next steps.",
+      });
+      const nextEntry: SessionEntry = {
+        ...sessionEntry,
+        updatedAt: Date.now(),
+        promptContext: buildUpdatedPromptContextForSummary({
+          current: sessionEntry.promptContext,
+          summary,
+          source: "auto",
+          tokenCount: sessionEntry.totalTokens,
+        }),
+      };
+      if (sessionStore && sessionKey) {
+        await persistSessionEntry({
+          sessionStore,
+          sessionKey,
+          storePath,
+          entry: nextEntry,
+        });
+      }
+      sessionEntry = nextEntry;
+    }
+    const runExtraSystemPrompt = [
+      opts.extraSystemPrompt,
+      buildSessionPromptContextAddition(sessionEntry),
+    ]
+      .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+      .join("\n\n");
 
     const startedAt = Date.now();
     let lifecycleEnded = false;
@@ -775,7 +820,6 @@ async function agentCommandInternal(
             resolvedThinkLevel,
             timeoutMs,
             runId,
-            opts,
             runContext,
             spawnedBy,
             messageChannel,
@@ -785,6 +829,10 @@ async function agentCommandInternal(
             authProfileProvider: providerForAuthProfileValidation,
             sessionStore,
             storePath,
+            opts: {
+              ...opts,
+              extraSystemPrompt: runExtraSystemPrompt || undefined,
+            },
             allowTransientCooldownProbe: runOptions?.allowTransientCooldownProbe,
             sessionHasHistory: !isNewSession || (await sessionFileHasContent(sessionFile)),
             onAgentEvent: (evt) => {

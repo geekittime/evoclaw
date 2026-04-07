@@ -25,6 +25,11 @@ export type ExecApprovalsFile = {
   socket?: { path?: string };
   defaults?: ExecApprovalsDefaults;
   agents?: Record<string, ExecApprovalsAgent>;
+  commandAllowlist?: string[];
+  pathAllowlist?: string[];
+  pathBlocklist?: string[];
+  defaultCommandMode?: "allow" | "ask" | "deny";
+  commandRules?: Record<string, "allow" | "ask" | "deny">;
 };
 
 export type ExecApprovalsSnapshot = {

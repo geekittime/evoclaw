@@ -115,6 +115,7 @@ declare global {
 }
 
 const bootAssistantIdentity = normalizeAssistantIdentity({});
+const METACLAW_UI_ENABLED = true;
 
 function resolveOnboardingMode(): boolean {
   if (!window.location.search) {
@@ -140,9 +141,11 @@ export class OpenClawApp extends LitElement {
     if (isSupportedLocale(this.settings.locale)) {
       void i18n.setLocale(this.settings.locale);
     }
-    const metaclawSettings = loadMetaclawSettings();
-    this.metaclawApiBase = metaclawSettings.apiBase;
-    this.metaclawToken = metaclawSettings.token;
+    if (METACLAW_UI_ENABLED) {
+      const metaclawSettings = loadMetaclawSettings();
+      this.metaclawApiBase = metaclawSettings.apiBase;
+      this.metaclawToken = metaclawSettings.token;
+    }
   }
   @state() password = "";
   @state() loginShowGatewayToken = false;
@@ -213,6 +216,7 @@ export class OpenClawApp extends LitElement {
   @state() execApprovalQueue: ExecApprovalRequest[] = [];
   @state() execApprovalBusy = false;
   @state() execApprovalError: string | null = null;
+  @state() metaclawEnabled = METACLAW_UI_ENABLED;
   @state() pendingGatewayUrl: string | null = null;
   pendingGatewayToken: string | null = null;
 
@@ -532,8 +536,10 @@ export class OpenClawApp extends LitElement {
     };
     document.addEventListener("keydown", this.globalKeydownHandler);
     handleConnected(this as unknown as Parameters<typeof handleConnected>[0]);
-    this.scheduleMetaclawRefresh(0);
-    if (this.metaclawPollInterval == null) {
+    if (this.metaclawEnabled) {
+      this.scheduleMetaclawRefresh(0);
+    }
+    if (this.metaclawEnabled && this.metaclawPollInterval == null) {
       this.metaclawPollInterval = window.setInterval(() => {
         this.scheduleMetaclawRefresh(0);
       }, 10000);
@@ -561,14 +567,15 @@ export class OpenClawApp extends LitElement {
   protected updated(changed: Map<PropertyKey, unknown>) {
     handleUpdated(this as unknown as Parameters<typeof handleUpdated>[0], changed);
     if (
-      changed.has("sessionKey") ||
-      (changed.has("chatMessages") &&
-        Array.isArray(this.chatMessages) &&
-        this.chatMessages.length > 0)
+      this.metaclawEnabled &&
+      (changed.has("sessionKey") ||
+        (changed.has("chatMessages") &&
+          Array.isArray(this.chatMessages) &&
+          this.chatMessages.length > 0))
     ) {
       this.scheduleMetaclawRefresh(changed.has("sessionKey") ? 0 : 250);
     }
-    if (changed.has("metaclawApiBase") || changed.has("metaclawToken")) {
+    if (this.metaclawEnabled && (changed.has("metaclawApiBase") || changed.has("metaclawToken"))) {
       persistMetaclawSettings({
         apiBase: this.metaclawApiBase,
         token: this.metaclawToken,
@@ -825,6 +832,9 @@ export class OpenClawApp extends LitElement {
   }
 
   scheduleMetaclawRefresh(delayMs = 0) {
+    if (!this.metaclawEnabled) {
+      return;
+    }
     if (this.metaclawRefreshTimer != null) {
       window.clearTimeout(this.metaclawRefreshTimer);
       this.metaclawRefreshTimer = null;

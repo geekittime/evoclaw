@@ -72,6 +72,35 @@ export type CliSessionBinding = {
   mcpConfigHash?: string;
 };
 
+export type SessionFeedbackRecord = {
+  id: string;
+  createdAt: number;
+  rating: "good" | "bad";
+  feedback?: string;
+  instructionText?: string;
+  responseText?: string;
+  turn?: number | null;
+  summary?: string;
+};
+
+export type SessionSkillSelectionRecord = {
+  updatedAt: number;
+  selectedSkillNames: string[];
+};
+
+export type SessionPromptContext = {
+  selectedSkillNames?: string[];
+  selectionCustomized?: boolean;
+  importantNotes?: string;
+  importantNotesUpdatedAt?: number;
+  contextSummary?: string;
+  contextSummaryUpdatedAt?: number;
+  contextSummarySource?: "manual" | "auto";
+  contextSummaryTokenCount?: number;
+  feedbackRecords?: SessionFeedbackRecord[];
+  skillSelectionHistory?: SessionSkillSelectionRecord[];
+};
+
 export type SessionEntry = {
   /**
    * Last delivered heartbeat payload (used to suppress duplicate heartbeat notifications).
@@ -189,6 +218,7 @@ export type SessionEntry = {
   lastAccountId?: string;
   lastThreadId?: string | number;
   skillsSnapshot?: SessionSkillSnapshot;
+  promptContext?: SessionPromptContext;
   systemPromptReport?: SessionSystemPromptReport;
   acp?: SessionAcpMeta;
 };

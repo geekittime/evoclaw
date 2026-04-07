@@ -181,11 +181,53 @@ export function normalizeModelRef(
   options?: ModelRefNormalizeOptions,
 ): ModelRef {
   const normalizedProvider = normalizeProviderId(provider);
+  if (normalizedProvider === "metaclaw") {
+    const normalizedLegacyModel = model.trim();
+    return {
+      provider: "deepseek",
+      model:
+        normalizedLegacyModel === "deepseek-chat" || normalizedLegacyModel === "deepseek-reasoner"
+          ? normalizedLegacyModel
+          : "deepseek-chat",
+    };
+  }
   const normalizedModel =
     options?.allowPluginNormalization === false
       ? model.trim()
       : normalizeProviderModelId(normalizedProvider, model.trim());
   return { provider: normalizedProvider, model: normalizedModel };
+}
+
+function resolveMetaclawProviderFallback(params: {
+  cfg: OpenClawConfig;
+  resolved: ModelRef;
+}): ModelRef | null {
+  const resolved = params.resolved;
+  if (resolved.provider !== "metaclaw") {
+    return null;
+  }
+  const configuredProviders = params.cfg.models?.providers;
+  const preferredDeepseek = configuredProviders?.deepseek;
+  const preferredDeepseekModel = preferredDeepseek?.models?.find(
+    (entry) =>
+      entry?.id === resolved.model || entry?.id === "deepseek-chat" || entry?.id === "deepseek-reasoner",
+  )?.id;
+  if (preferredDeepseekModel) {
+    return { provider: "deepseek", model: preferredDeepseekModel };
+  }
+  const availableProvider = Object.entries(configuredProviders ?? {}).find(
+    ([providerId, providerCfg]) =>
+      normalizeProviderId(providerId) !== "metaclaw" &&
+      providerCfg &&
+      Array.isArray(providerCfg.models) &&
+      providerCfg.models.length > 0 &&
+      providerCfg.models[0]?.id,
+  );
+  if (!availableProvider) {
+    return null;
+  }
+  const [providerId, providerCfg] = availableProvider;
+  return { provider: normalizeProviderId(providerId), model: providerCfg.models[0].id };
 }
 
 type ParseModelRefOptions = ModelRefNormalizeOptions;
@@ -396,6 +438,18 @@ export function resolveConfiguredModelRef(params: {
       allowPluginNormalization: params.allowPluginNormalization,
     });
     if (resolved) {
+      const metaclawFallback = resolveMetaclawProviderFallback({
+        cfg: params.cfg,
+        resolved: resolved.ref,
+      });
+      if (metaclawFallback) {
+        const safe = sanitizeForLog(trimmed);
+        const safeFallback = sanitizeForLog(`${metaclawFallback.provider}/${metaclawFallback.model}`);
+        getLog().warn(
+          `Legacy MetaClaw model "${safe}" detected. Using OpenClaw native provider "${safeFallback}" instead.`,
+        );
+        return metaclawFallback;
+      }
       return resolved.ref;
     }
 

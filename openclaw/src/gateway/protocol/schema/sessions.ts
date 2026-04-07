@@ -163,6 +163,43 @@ export const SessionsCompactParamsSchema = Type.Object(
   { additionalProperties: false },
 );
 
+export const SessionsPromptContextGetParamsSchema = Type.Object(
+  {
+    key: NonEmptyString,
+  },
+  { additionalProperties: false },
+);
+
+export const SessionsPromptContextSkillsSetParamsSchema = Type.Object(
+  {
+    key: NonEmptyString,
+    selectedSkillNames: Type.Array(Type.String()),
+    selectionCustomized: Type.Optional(Type.Boolean()),
+  },
+  { additionalProperties: false },
+);
+
+export const SessionsPromptContextFeedbackParamsSchema = Type.Object(
+  {
+    key: NonEmptyString,
+    rating: Type.Union([Type.Literal("good"), Type.Literal("bad")]),
+    feedback: Type.Optional(Type.String()),
+    responseText: Type.String(),
+    instructionText: Type.Optional(Type.String()),
+    turn: Type.Optional(Type.Union([Type.Integer({ minimum: 0 }), Type.Null()])),
+  },
+  { additionalProperties: false },
+);
+
+export const SessionsPromptContextCompactParamsSchema = Type.Object(
+  {
+    key: NonEmptyString,
+    instructions: Type.Optional(Type.String()),
+    source: Type.Optional(Type.Union([Type.Literal("manual"), Type.Literal("auto")])),
+  },
+  { additionalProperties: false },
+);
+
 export const SessionsUsageParamsSchema = Type.Object(
   {
     /** Specific session key to analyze; if omitted returns all sessions. */

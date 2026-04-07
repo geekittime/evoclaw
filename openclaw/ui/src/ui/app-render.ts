@@ -7,7 +7,6 @@ import {
 import { t } from "../i18n/index.ts";
 import { getSafeLocalStorage } from "../local-storage.ts";
 import { refreshChatAvatar } from "./app-chat.ts";
-import { resolveChatModelOverrideValue } from "./chat-model-select-state.ts";
 import { renderUsageTab } from "./app-render-usage-tab.ts";
 import {
   renderChatControls,
@@ -33,8 +32,6 @@ import {
 import { loadChannels } from "./controllers/channels.ts";
 import {
   loadChatHistory,
-  METACLAW_APPROVAL_SOURCE_TOOL,
-  sendHiddenSystemChatMessage,
 } from "./controllers/chat.ts";
 import {
   applyConfig,
@@ -125,34 +122,6 @@ import { renderOverview } from "./views/overview.ts";
 // Lazy-loaded view modules – deferred so the initial bundle stays small.
 // Each loader resolves once; subsequent calls return the cached module.
 type LazyState<T> = { mod: T | null; promise: Promise<T> | null };
-
-function buildMetaclawFallbackSessionIds(
-  state: Pick<
-    AppViewState,
-    "sessionKey" | "chatModelOverrides" | "chatModelCatalog" | "sessionsResult"
-  >,
-): string[] {
-  const currentModel = resolveChatModelOverrideValue(state).trim();
-  if (!currentModel) {
-    return [];
-  }
-  const slashIndex = currentModel.lastIndexOf("/");
-  const modelId = slashIndex >= 0 ? currentModel.slice(slashIndex + 1).trim() : currentModel;
-  if (!modelId) {
-    return [];
-  }
-  const fallbackSessionId = `tui-${modelId}`;
-  return fallbackSessionId === state.sessionKey ? [] : [fallbackSessionId];
-}
-
-function buildMetaclawRejectContinuationMessage(approvalId: string): string {
-  return [
-    `The operator rejected MetaClaw approval ${approvalId}.`,
-    "Continue the current task with the existing conversation context without executing the blocked command.",
-    "Do not request the same blocked command again unless the user explicitly changes the task.",
-    "If a safe alternative exists, proceed with it; otherwise explain what is blocked and offer the next safest next step.",
-  ].join(" ");
-}
 
 let _pendingUpdate: (() => void) | undefined;
 
@@ -1577,113 +1546,94 @@ export function renderApp(state: AppViewState) {
               assistantName: state.assistantName,
               assistantAvatar: state.assistantAvatar,
               basePath: state.basePath ?? "",
-              metaclaw: {
-                apiBase: state.metaclawApiBase,
-                token: state.metaclawToken,
-                loading: state.metaclawLoading,
-                saving: state.metaclawSaving,
-                compactingHistory: state.metaclawCompactingHistory,
-                connected: state.metaclawConnected,
-                error: state.metaclawError,
-                pendingApprovals: state.metaclawPendingApprovals,
-                sandboxPolicy: state.metaclawSandboxPolicy,
-                skills: state.metaclawSkills,
-                selectedSkillNames: state.metaclawSelectedSkillNames,
-                selectionCustomized: state.metaclawSelectionCustomized,
-                latestInjectedSkills: state.metaclawLatestInjectedSkills,
-                importantNotes: state.metaclawImportantNotes,
-                contextSummary: state.metaclawContextSummary,
-                sections: state.metaclawSections,
-                onApiBaseChange: (value) => (state.metaclawApiBase = value),
-                onTokenChange: (value) => (state.metaclawToken = value),
-                onRefresh: () => loadMetaclawState(state),
-                onCompactHistory: async () => {
-                  if (state.metaclawCompactingHistory || state.chatMessages.length === 0) {
-                    return;
+              metaclaw: state.metaclawEnabled
+                ? {
+                    apiBase: state.metaclawApiBase,
+                    token: state.metaclawToken,
+                    loading: state.metaclawLoading,
+                    saving: state.metaclawSaving,
+                    compactingHistory: state.metaclawCompactingHistory,
+                    connected: state.metaclawConnected,
+                    error: state.metaclawError,
+                    pendingApprovals: state.metaclawPendingApprovals,
+                    sandboxPolicy: state.metaclawSandboxPolicy,
+                    skills: state.metaclawSkills,
+                    selectedSkillNames: state.metaclawSelectedSkillNames,
+                    selectionCustomized: state.metaclawSelectionCustomized,
+                    latestInjectedSkills: state.metaclawLatestInjectedSkills,
+                    importantNotes: state.metaclawImportantNotes,
+                    contextSummary: state.metaclawContextSummary,
+                    sections: state.metaclawSections,
+                    onApiBaseChange: (value) => (state.metaclawApiBase = value),
+                    onTokenChange: (value) => (state.metaclawToken = value),
+                    onRefresh: () => loadMetaclawState(state),
+                    onCompactHistory: async () => {
+                      if (state.metaclawCompactingHistory || state.chatMessages.length === 0) {
+                        return;
+                      }
+                      state.metaclawCompactingHistory = true;
+                      try {
+                        await compactMetaclawConversationHistory(state, state.chatMessages);
+                      } finally {
+                        state.metaclawCompactingHistory = false;
+                        state.scheduleMetaclawRefresh(0);
+                      }
+                    },
+                    onApprove: async (approvalId) => {
+                      if (state.metaclawSaving) {
+                        return;
+                      }
+                      try {
+                        await resolveMetaclawApproval(state, approvalId, "approve");
+                        await waitForMetaclawApprovalResolution(state, approvalId);
+                      } catch (error) {
+                        state.metaclawError = error instanceof Error ? error.message : String(error);
+                        throw error;
+                      } finally {
+                        state.scheduleMetaclawRefresh(150);
+                      }
+                    },
+                    onReject: async (approvalId) => {
+                      if (state.metaclawSaving) {
+                        return;
+                      }
+                      try {
+                        await resolveMetaclawApproval(state, approvalId, "reject");
+                        await waitForMetaclawApprovalResolution(state, approvalId);
+                      } catch (error) {
+                        state.metaclawError = error instanceof Error ? error.message : String(error);
+                        throw error;
+                      } finally {
+                        state.scheduleMetaclawRefresh(150);
+                      }
+                    },
+                    onSavePolicy: (policy) => saveMetaclawSandboxPolicy(state, policy),
+                    onAddWhitelistEntry: (type, value) =>
+                      addMetaclawWhitelistEntry(state, type, value),
+                    onRemoveWhitelistEntry: (type, value) =>
+                      removeMetaclawWhitelistEntry(state, type, value),
+                    onSaveSkillSelection: (skillNames) =>
+                      saveMetaclawSkillSelection(state, skillNames),
+                    onSubmitFeedback: async (
+                      turn,
+                      rating,
+                      feedback,
+                      responseText,
+                      instructionText,
+                    ) => {
+                      const result = await submitMetaclawFeedback(
+                        state,
+                        turn,
+                        rating,
+                        feedback,
+                        responseText,
+                        instructionText,
+                      );
+                      await loadMetaclawState(state);
+                      return result;
+                    },
                   }
-                  state.metaclawCompactingHistory = true;
-                  try {
-                    await compactMetaclawConversationHistory(state, state.chatMessages);
-                  } finally {
-                    state.metaclawCompactingHistory = false;
-                    state.scheduleMetaclawRefresh(0);
-                  }
-                },
-                onApprove: async (approvalId) => {
-                  if (state.metaclawSaving) {
-                    return;
-                  }
-                  state.metaclawPendingApprovals = [];
-                  state.metaclawSaving = true;
-                  try {
-                    await sendHiddenSystemChatMessage(state, `approve ${approvalId}`, {
-                      sourceTool: METACLAW_APPROVAL_SOURCE_TOOL,
-                      sourceSessionKey: state.sessionKey,
-                      appendAssistantErrorOnFailure: false,
-                    });
-                    await waitForMetaclawApprovalResolution(
-                      state,
-                      approvalId,
-                      buildMetaclawFallbackSessionIds(state),
-                    );
-                  } catch (error) {
-                    state.metaclawError = error instanceof Error ? error.message : String(error);
-                    throw error;
-                  } finally {
-                    state.metaclawSaving = false;
-                    state.scheduleMetaclawRefresh(150);
-                  }
-                },
-                onReject: async (approvalId) => {
-                  if (state.metaclawSaving) {
-                    return;
-                  }
-                  state.metaclawPendingApprovals = [];
-                  state.metaclawSaving = true;
-                  try {
-                    await resolveMetaclawApproval(
-                      state,
-                      approvalId,
-                      "reject",
-                      buildMetaclawFallbackSessionIds(state),
-                    );
-                    state.metaclawPendingApprovals = [];
-                    await sendHiddenSystemChatMessage(
-                      state,
-                      buildMetaclawRejectContinuationMessage(approvalId),
-                      {
-                        sourceTool: METACLAW_APPROVAL_SOURCE_TOOL,
-                        sourceSessionKey: state.sessionKey,
-                        appendAssistantErrorOnFailure: false,
-                      },
-                    );
-                  } catch (error) {
-                    state.metaclawError = error instanceof Error ? error.message : String(error);
-                    throw error;
-                  } finally {
-                    state.metaclawSaving = false;
-                    state.scheduleMetaclawRefresh(150);
-                  }
-                },
-                onSavePolicy: (policy) => saveMetaclawSandboxPolicy(state, policy),
-                onAddWhitelistEntry: (type, value) => addMetaclawWhitelistEntry(state, type, value),
-                onRemoveWhitelistEntry: (type, value) =>
-                  removeMetaclawWhitelistEntry(state, type, value),
-                onSaveSkillSelection: (skillNames) => saveMetaclawSkillSelection(state, skillNames),
-                onSubmitFeedback: async (turn, rating, feedback, responseText, instructionText) => {
-                  const result = await submitMetaclawFeedback(
-                    state,
-                    turn,
-                    rating,
-                    feedback,
-                    responseText,
-                    instructionText,
-                    buildMetaclawFallbackSessionIds(state),
-                  );
-                  await loadMetaclawState(state);
-                  return result;
-                },
-              },
+                : undefined,
             })
           : nothing}
         ${state.tab === "config"
@@ -2143,7 +2093,9 @@ export function renderApp(state: AppViewState) {
             )
           : nothing}
       </main>
-      ${renderExecApprovalPrompt(state)} ${renderGatewayUrlConfirmation(state)} ${nothing}
+      ${state.metaclawEnabled ? nothing : renderExecApprovalPrompt(state)}
+      ${renderGatewayUrlConfirmation(state)}
+      ${nothing}
     </div>
   `;
 }

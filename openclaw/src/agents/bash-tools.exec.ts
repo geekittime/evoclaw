@@ -1115,6 +1115,74 @@ function deriveExecShortName(fullPath: string): string {
   return base.replace(/\.exe$/i, "") || base;
 }
 
+function normalizeExecCommandPolicyKey(value: string | undefined): string | undefined {
+  const trimmed = value?.trim().toLowerCase();
+  return trimmed ? trimmed : undefined;
+}
+
+function resolvePrimaryExecCommandName(command: string): string | undefined {
+  const analysis = analyzeShellCommand({ command: command.trim() });
+  const firstArgv = analysis.ok ? analysis.segments[0]?.argv : splitShellArgs(command);
+  if (!firstArgv || firstArgv.length === 0) {
+    return undefined;
+  }
+  const stripped = stripPreflightEnvPrefix(firstArgv);
+  const executable = stripped[0]?.trim();
+  if (!executable) {
+    return undefined;
+  }
+  return normalizeExecCommandPolicyKey(path.basename(executable).replace(/\.exe$/i, ""));
+}
+
+function expandUserHomePrefix(value: string): string {
+  if (value === "~") {
+    return process.env.HOME || value;
+  }
+  if (value.startsWith("~/")) {
+    return path.join(process.env.HOME || "~", value.slice(2));
+  }
+  return value;
+}
+
+function normalizePolicyPath(value: string): string {
+  return path.resolve(expandUserHomePrefix(value.trim()));
+}
+
+function isPathWithinPolicyPrefix(candidate: string, prefix: string): boolean {
+  const normalizedCandidate = normalizePolicyPath(candidate);
+  const normalizedPrefix = normalizePolicyPath(prefix);
+  if (normalizedCandidate === normalizedPrefix) {
+    return true;
+  }
+  const rel = path.relative(normalizedPrefix, normalizedCandidate);
+  return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
+}
+
+function collectExecCommandPathCandidates(command: string, cwd?: string): string[] {
+  const analysis = analyzeShellCommand({ command: command.trim() });
+  const argvLists = analysis.ok
+    ? analysis.segments.map((segment) => segment.argv)
+    : (() => {
+        const argv = splitShellArgs(command);
+        return argv ? [argv] : [];
+      })();
+  const candidates = new Set<string>();
+  if (cwd?.trim()) {
+    candidates.add(cwd.trim());
+  }
+  for (const argv of argvLists) {
+    const stripped = stripPreflightEnvPrefix(argv);
+    for (let index = 1; index < stripped.length; index += 1) {
+      const token = stripped[index]?.trim();
+      if (!token || token === "--" || token.startsWith("-")) {
+        continue;
+      }
+      candidates.add(token);
+    }
+  }
+  return [...candidates];
+}
+
 function buildExecToolDescription(agentId?: string): string {
   const base =
     "Execute shell commands with background continuation. Use yieldMs/background to continue later via process tool. Use pty=true for TTY-required commands (terminal UIs, coding agents).";
@@ -1317,7 +1385,11 @@ export function createExecTool(
       });
       const host: ExecHost = target.effectiveHost;
 
-      const approvalDefaults = loadExecApprovals().defaults;
+      const approvalPolicy = resolveExecApprovalsFromFile({
+        file: loadExecApprovals(),
+        agentId,
+      });
+      const approvalDefaults = approvalPolicy.defaults;
       const configuredSecurity =
         defaults?.security ?? approvalDefaults?.security ?? (host === "sandbox" ? "deny" : "full");
       const requestedSecurity = normalizeExecSecurity(params.security);
@@ -1372,6 +1444,43 @@ export function createExecTool(
         workdir = resolveWorkdir(rawWorkdir, warnings);
       }
       rejectExecApprovalShellCommand(params.command);
+      const primaryCommand = resolvePrimaryExecCommandName(params.command);
+      const commandMode = primaryCommand
+        ? approvalPolicy.commandRules[primaryCommand] ??
+          (approvalPolicy.commandAllowlist.some(
+            (entry) => normalizeExecCommandPolicyKey(entry) === primaryCommand,
+          )
+            ? "allow"
+            : approvalPolicy.defaultCommandMode)
+        : approvalPolicy.defaultCommandMode;
+      if (commandMode === "deny") {
+        throw new Error(
+          primaryCommand
+            ? `exec denied by command policy for "${primaryCommand}".`
+            : "exec denied by command policy.",
+        );
+      }
+      if (commandMode === "allow") {
+        security = "full";
+        ask = "off";
+      } else if (commandMode === "ask") {
+        ask = "always";
+      }
+      const blockedPath = collectExecCommandPathCandidates(params.command, workdir).find((candidate) => {
+        if (
+          approvalPolicy.pathAllowlist.some((allowedPath) =>
+            isPathWithinPolicyPrefix(candidate, allowedPath),
+          )
+        ) {
+          return false;
+        }
+        return approvalPolicy.pathBlocklist.some((blocked) =>
+          isPathWithinPolicyPrefix(candidate, blocked),
+        );
+      });
+      if (blockedPath) {
+        throw new Error(`exec denied: path is blocked by operator policy (${blockedPath}).`);
+      }
 
       const inheritedBaseEnv = coerceEnv(process.env);
       const hostEnvResult =

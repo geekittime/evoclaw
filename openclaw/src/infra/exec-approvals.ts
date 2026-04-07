@@ -13,6 +13,7 @@ export type ExecHost = "sandbox" | "gateway" | "node";
 export type ExecTarget = "auto" | ExecHost;
 export type ExecSecurity = "deny" | "allowlist" | "full";
 export type ExecAsk = "off" | "on-miss" | "always";
+export type ExecCommandMode = "allow" | "ask" | "deny";
 
 export function normalizeExecHost(value?: string | null): ExecHost | null {
   const normalized = value?.trim().toLowerCase();
@@ -143,6 +144,11 @@ export type ExecApprovalsFile = {
   };
   defaults?: ExecApprovalsDefaults;
   agents?: Record<string, ExecApprovalsAgent>;
+  commandAllowlist?: string[];
+  pathAllowlist?: string[];
+  pathBlocklist?: string[];
+  defaultCommandMode?: ExecCommandMode;
+  commandRules?: Record<string, ExecCommandMode>;
 };
 
 export type ExecApprovalsSnapshot = {
@@ -166,6 +172,11 @@ export type ExecApprovalsResolved = {
   };
   allowlist: ExecAllowlistEntry[];
   file: ExecApprovalsFile;
+  commandAllowlist: string[];
+  pathAllowlist: string[];
+  pathBlocklist: string[];
+  defaultCommandMode: ExecCommandMode;
+  commandRules: Record<string, ExecCommandMode>;
 };
 
 // Keep CLI + gateway defaults in sync.
@@ -196,6 +207,61 @@ export function resolveExecApprovalsSocketPath(): string {
 function normalizeAllowlistPattern(value: string | undefined): string | null {
   const trimmed = value?.trim() ?? "";
   return trimmed ? trimmed.toLowerCase() : null;
+}
+
+function normalizeExecCommandMode(value: unknown): ExecCommandMode | undefined {
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (normalized === "allow" || normalized === "ask" || normalized === "deny") {
+    return normalized;
+  }
+  return undefined;
+}
+
+function normalizeCommandPolicyKey(value: unknown): string | null {
+  const trimmed = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return trimmed ? trimmed : null;
+}
+
+function normalizeStringList(values: unknown): string[] | undefined {
+  if (!Array.isArray(values)) {
+    return undefined;
+  }
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const value of values) {
+    if (typeof value !== "string") {
+      continue;
+    }
+    const trimmed = value.trim();
+    if (!trimmed) {
+      continue;
+    }
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    normalized.push(trimmed);
+  }
+  return normalized;
+}
+
+function normalizeCommandRules(
+  value: unknown,
+): Record<string, ExecCommandMode> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const rules: Record<string, ExecCommandMode> = {};
+  for (const [rawKey, rawMode] of Object.entries(value)) {
+    const key = normalizeCommandPolicyKey(rawKey);
+    const mode = normalizeExecCommandMode(rawMode);
+    if (!key || !mode) {
+      continue;
+    }
+    rules[key] = mode;
+  }
+  return Object.keys(rules).length > 0 ? rules : undefined;
 }
 
 function mergeLegacyAgent(
@@ -352,6 +418,11 @@ export function normalizeExecApprovals(file: ExecApprovalsFile): ExecApprovalsFi
     }
   }
   const sanitizedDefaults = sanitizeExecApprovalPolicy(file.defaults);
+  const commandAllowlist = normalizeStringList(file.commandAllowlist);
+  const pathAllowlist = normalizeStringList(file.pathAllowlist);
+  const pathBlocklist = normalizeStringList(file.pathBlocklist);
+  const defaultCommandMode = normalizeExecCommandMode(file.defaultCommandMode);
+  const commandRules = normalizeCommandRules(file.commandRules);
   const normalized: ExecApprovalsFile = {
     version: 1,
     socket: {
@@ -362,6 +433,11 @@ export function normalizeExecApprovals(file: ExecApprovalsFile): ExecApprovalsFi
       ...sanitizedDefaults,
     },
     agents,
+    ...(commandAllowlist ? { commandAllowlist } : {}),
+    ...(pathAllowlist ? { pathAllowlist } : {}),
+    ...(pathBlocklist ? { pathBlocklist } : {}),
+    ...(defaultCommandMode ? { defaultCommandMode } : {}),
+    ...(commandRules ? { commandRules } : {}),
   };
   return normalized;
 }
@@ -698,6 +774,11 @@ export function resolveExecApprovalsFromFile(params: {
     },
     allowlist,
     file,
+    commandAllowlist: file.commandAllowlist ?? [],
+    pathAllowlist: file.pathAllowlist ?? [],
+    pathBlocklist: file.pathBlocklist ?? [],
+    defaultCommandMode: file.defaultCommandMode ?? "ask",
+    commandRules: file.commandRules ?? {},
   };
 }
 

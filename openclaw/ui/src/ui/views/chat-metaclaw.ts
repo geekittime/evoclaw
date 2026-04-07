@@ -259,10 +259,7 @@ function renderConnectionPanel(props: ChatMetaclawProps): TemplateResult {
       <div class="metaclaw-panel__head">
         <div>
           <div class="metaclaw-panel__title">Connection</div>
-          <div class="metaclaw-panel__sub">
-            Configure the upstream MetaClaw endpoint. Requests go through the OpenClaw same-origin
-            proxy.
-          </div>
+          <div class="metaclaw-panel__sub">This panel is now powered directly by OpenClaw.</div>
         </div>
         <span
           class="metaclaw-status-pill metaclaw-status-pill--${props.connected
@@ -276,13 +273,13 @@ function renderConnectionPanel(props: ChatMetaclawProps): TemplateResult {
       </div>
       <div class="metaclaw-field-grid">
         <label class="field">
-          <span>MetaClaw URL</span>
+          <span>Legacy URL</span>
           <input
             class="input"
             .value=${props.apiBase}
             @input=${(event: Event) =>
               props.onApiBaseChange((event.target as HTMLInputElement).value)}
-            placeholder="http://127.0.0.1:30000"
+            placeholder="Unused in native OpenClaw mode"
           />
         </label>
         <label class="field">
@@ -292,13 +289,13 @@ function renderConnectionPanel(props: ChatMetaclawProps): TemplateResult {
             .value=${props.token}
             @input=${(event: Event) =>
               props.onTokenChange((event.target as HTMLInputElement).value)}
-            placeholder="Optional"
+            placeholder="Unused in native OpenClaw mode"
           />
         </label>
       </div>
       <div class="metaclaw-inline-stats">
         <span class="chip">${props.token.trim() ? "Token configured" : "No token"}</span>
-        <span class="chip">${props.connected ? "Proxy reachable" : "Proxy unreachable"}</span>
+        <span class="chip">${props.connected ? "Gateway reachable" : "Gateway unreachable"}</span>
         <span class="chip">${degradedCount} limited section${degradedCount === 1 ? "" : "s"}</span>
       </div>
       ${props.error ? html`<div class="callout danger">${props.error}</div>` : nothing}
@@ -321,7 +318,7 @@ function renderPendingApprovalsPanel(props: ChatMetaclawProps): TemplateResult {
       </div>
       ${renderSectionCallout(
         section,
-        "Pending approvals are unavailable for this MetaClaw session.",
+        "Pending approvals are unavailable for this OpenClaw session.",
       )}
       ${section.status === "ready"
         ? props.pendingApprovals.length === 0
@@ -417,7 +414,7 @@ export function renderMetaclawPendingApprovalsInline(
           <div class="metaclaw-panel__title">Pending Command Approvals</div>
           <div class="metaclaw-panel__sub">
             The agent requested restricted commands. Approve or reject them here without opening
-            MetaClaw Studio.
+            the session studio.
           </div>
         </div>
         <span class="metaclaw-status-pill metaclaw-status-pill--warn">
@@ -544,11 +541,11 @@ export function renderMetaclawPendingApprovalPrompt(
       <div class="exec-approval-card">
         <div class="exec-approval-header">
           <div>
-            <div class="exec-approval-title">MetaClaw approval needed</div>
+            <div class="exec-approval-title">OpenClaw approval needed</div>
             <div class="exec-approval-sub">
               ${activePendingApproval
                 ? "A sandboxed command is waiting for your decision."
-                : "The assistant reported a MetaClaw approval request that still needs a decision."}
+                : "The assistant reported an approval request that still needs a decision."}
             </div>
           </div>
           ${queueCount > 1 ? html`<div class="exec-approval-queue">${queueCount} pending</div>` : nothing}
@@ -576,7 +573,7 @@ export function renderMetaclawPendingApprovalPrompt(
                 <div class="metaclaw-approval__decision">
                   <strong>assistant</strong>
                   <span class="mono"
-                    >${fallbackPrompt?.detailText ?? "MetaClaw reported a pending approval."}</span
+                    >${fallbackPrompt?.detailText ?? "OpenClaw reported a pending approval."}</span
                   >
                   <span class="muted">${fallbackPrompt?.rawText ?? ""}</span>
                 </div>
@@ -632,7 +629,7 @@ function renderCommandPolicyPanel(
       </div>
       ${renderSectionCallout(
         section,
-        "Command policy controls are unavailable for this MetaClaw session.",
+        "Command policy controls are unavailable for this OpenClaw session.",
       )}
       ${policy
         ? html`
@@ -781,7 +778,7 @@ function renderAccessListsPanel(
       </div>
       ${renderSectionCallout(
         section,
-        "Access list controls are unavailable for this MetaClaw session.",
+        "Access list controls are unavailable for this OpenClaw session.",
       )}
       ${policy
         ? html`
@@ -945,7 +942,7 @@ function renderSkillsPanel(props: ChatMetaclawProps): TemplateResult {
         </div>
         ${sectionBadge(section)}
       </div>
-      ${renderSectionCallout(section, "Skill management is unavailable for this MetaClaw session.")}
+      ${renderSectionCallout(section, "Skill management is unavailable for this OpenClaw session.")}
       ${section.status === "ready"
         ? html`
             <div class="metaclaw-inline-stats">
@@ -1075,7 +1072,7 @@ export function renderMetaclawStudio(
   const activeSkillCount = props.selectedSkillNames.length;
   const blockedPathCount = props.sandboxPolicy?.path_blocklist.length ?? 0;
   const studioExpanded = viewState.studioExpanded;
-  const toggleLabel = studioExpanded ? "Hide MetaClaw Studio" : "Show MetaClaw Studio";
+  const toggleLabel = studioExpanded ? "Hide Session Studio" : "Show Session Studio";
 
   return html`
     <div class="metaclaw-toggle-row">
@@ -1105,7 +1102,7 @@ export function renderMetaclawStudio(
           <section id="metaclaw-studio-panel" class="metaclaw-studio">
             <div class="metaclaw-studio__banner">
               <div>
-                <div class="metaclaw-studio__eyebrow">MetaClaw Studio</div>
+                <div class="metaclaw-studio__eyebrow">OpenClaw Session Studio</div>
                 <div class="metaclaw-studio__title">
                   Feedback, approvals, prompt skills, and safety policy
                 </div>
@@ -1120,7 +1117,7 @@ export function renderMetaclawStudio(
                     ? "ready"
                     : "error"}"
                 >
-                  ${props.connected ? "MetaClaw reachable" : "MetaClaw offline"}
+                  ${props.connected ? "OpenClaw ready" : "OpenClaw offline"}
                 </span>
                 <button
                   class="btn btn--ghost"
@@ -1158,8 +1155,11 @@ export function renderMetaclawStudio(
             </div>
 
             <div class="metaclaw-studio__grid">
-              ${renderConnectionPanel(props)} ${renderPendingApprovalsPanel(props)}
-              ${renderCommandPolicyPanel(props, viewState, requestUpdate)}
+              ${renderPendingApprovalsPanel(props)} ${renderCommandPolicyPanel(
+                props,
+                viewState,
+                requestUpdate,
+              )}
               ${renderAccessListsPanel(props, viewState, requestUpdate)} ${renderSkillsPanel(props)}
               ${renderNotesPanel(props)} ${renderContextSummaryPanel(props)}
             </div>

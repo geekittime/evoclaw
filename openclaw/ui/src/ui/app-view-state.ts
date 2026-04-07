@@ -59,6 +59,7 @@ export type AppViewState = {
   themeResolved: ResolvedTheme;
   themeOrder: ThemeName[];
   hello: GatewayHelloOk | null;
+  client: GatewayBrowserClient | null;
   lastError: string | null;
   lastErrorCode: string | null;
   eventLog: EventLogEntry[];
@@ -108,6 +109,7 @@ export type AppViewState = {
   execApprovalQueue: ExecApprovalRequest[];
   execApprovalBusy: boolean;
   execApprovalError: string | null;
+  metaclawEnabled: boolean;
   metaclawApiBase: string;
   metaclawToken: string;
   metaclawLoading: boolean;

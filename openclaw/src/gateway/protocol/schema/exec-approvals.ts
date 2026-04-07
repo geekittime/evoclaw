@@ -46,6 +46,18 @@ export const ExecApprovalsFileSchema = Type.Object(
     ),
     defaults: Type.Optional(ExecApprovalsDefaultsSchema),
     agents: Type.Optional(Type.Record(Type.String(), ExecApprovalsAgentSchema)),
+    commandAllowlist: Type.Optional(Type.Array(Type.String())),
+    pathAllowlist: Type.Optional(Type.Array(Type.String())),
+    pathBlocklist: Type.Optional(Type.Array(Type.String())),
+    defaultCommandMode: Type.Optional(
+      Type.Union([Type.Literal("allow"), Type.Literal("ask"), Type.Literal("deny")]),
+    ),
+    commandRules: Type.Optional(
+      Type.Record(
+        Type.String(),
+        Type.Union([Type.Literal("allow"), Type.Literal("ask"), Type.Literal("deny")]),
+      ),
+    ),
   },
   { additionalProperties: false },
 );

@@ -355,6 +355,42 @@ describe("normalizeExecApprovals handles string allowlist entries (#9790)", () =
   });
 });
 
+describe("exec approvals operator policy normalization", () => {
+  it("normalizes command and path policy fields from the approvals file", () => {
+    const resolved = resolveExecApprovalsFromFile({
+      file: {
+        version: 1,
+        commandAllowlist: [" ls ", "LS"],
+        pathAllowlist: ["/workspace/tmp", " /WORKSPACE/TMP "],
+        pathBlocklist: ["/secret", " /SECRET "],
+        defaultCommandMode: "ALLOW" as unknown as ExecApprovalsFile["defaultCommandMode"],
+        commandRules: {
+          " rm ": "DENY",
+          " LS ": "ask",
+          "": "allow",
+        } as unknown as ExecApprovalsFile["commandRules"],
+      },
+    });
+
+    expect(resolved.commandAllowlist).toEqual(["ls"]);
+    expect(resolved.pathAllowlist).toEqual(["/workspace/tmp"]);
+    expect(resolved.pathBlocklist).toEqual(["/secret"]);
+    expect(resolved.defaultCommandMode).toBe("allow");
+    expect(resolved.commandRules).toEqual({
+      rm: "deny",
+      ls: "ask",
+    });
+    expect(resolved.file.commandAllowlist).toEqual(["ls"]);
+    expect(resolved.file.pathAllowlist).toEqual(["/workspace/tmp"]);
+    expect(resolved.file.pathBlocklist).toEqual(["/secret"]);
+    expect(resolved.file.defaultCommandMode).toBe("allow");
+    expect(resolved.file.commandRules).toEqual({
+      rm: "deny",
+      ls: "ask",
+    });
+  });
+});
+
 describe("normalizeExecApprovals strips invalid security/ask enum values (#59006)", () => {
   it("drops invalid defaults.security values like 'none'", () => {
     const file = {

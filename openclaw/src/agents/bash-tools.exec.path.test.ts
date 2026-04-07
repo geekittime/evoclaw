@@ -24,12 +24,18 @@ vi.mock("../infra/shell-env.js", async (importOriginal) => {
 
 vi.mock("../infra/exec-approvals.js", async (importOriginal) => {
   const mod = await importOriginal<typeof import("../infra/exec-approvals.js")>();
-  return { ...mod, resolveExecApprovals: () => createExecApprovals() };
+  return {
+    ...mod,
+    resolveExecApprovals: () => currentExecApprovals,
+    loadExecApprovals: () => currentExecApprovals.file,
+    resolveExecApprovalsFromFile: () => currentExecApprovals,
+  };
 });
 
 let createExecTool: typeof import("./bash-tools.exec.js").createExecTool;
+let currentExecApprovals: ExecApprovalsResolved;
 
-function createExecApprovals(): ExecApprovalsResolved {
+function createExecApprovals(overrides: Partial<ExecApprovalsResolved> = {}): ExecApprovalsResolved {
   return {
     path: "/tmp/exec-approvals.json",
     socketPath: "/tmp/exec-approvals.sock",
@@ -52,6 +58,11 @@ function createExecApprovals(): ExecApprovalsResolved {
       askFallback: "defaults.askFallback",
     },
     allowlist: [],
+    commandAllowlist: [],
+    pathAllowlist: [],
+    pathBlocklist: [],
+    defaultCommandMode: "ask",
+    commandRules: {},
     file: {
       version: 1,
       socket: { path: "/tmp/exec-approvals.sock", token: "token" },
@@ -62,7 +73,13 @@ function createExecApprovals(): ExecApprovalsResolved {
         autoAllowSkills: false,
       },
       agents: {},
+      commandAllowlist: [],
+      pathAllowlist: [],
+      pathBlocklist: [],
+      defaultCommandMode: "ask",
+      commandRules: {},
     },
+    ...overrides,
   };
 }
 
@@ -78,7 +95,12 @@ async function loadFreshBashExecPathModulesForTest() {
   });
   vi.doMock("../infra/exec-approvals.js", async (importOriginal) => {
     const mod = await importOriginal<typeof import("../infra/exec-approvals.js")>();
-    return { ...mod, resolveExecApprovals: () => createExecApprovals() };
+    return {
+      ...mod,
+      resolveExecApprovals: () => currentExecApprovals,
+      loadExecApprovals: () => currentExecApprovals.file,
+      resolveExecApprovalsFromFile: () => currentExecApprovals,
+    };
   });
   const bashExec = await import("./bash-tools.exec.js");
   return {
@@ -103,6 +125,7 @@ describe("exec PATH login shell merge", () => {
 
   beforeEach(async () => {
     envSnapshot = captureEnv(["PATH", "SHELL"]);
+    currentExecApprovals = createExecApprovals();
     shellEnvMocks.getShellPathFromLoginShell.mockReset();
     shellEnvMocks.getShellPathFromLoginShell.mockReturnValue("/custom/bin:/opt/bin");
     shellEnvMocks.resolveShellEnvFallbackTimeoutMs.mockReset();
@@ -217,6 +240,119 @@ describe("exec PATH login shell merge", () => {
       );
     } finally {
       fs.rmSync(shellDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("exec operator command and path policy", () => {
+  let envSnapshot: ReturnType<typeof captureEnv>;
+
+  beforeEach(async () => {
+    envSnapshot = captureEnv(["PATH", "SHELL"]);
+    currentExecApprovals = createExecApprovals();
+    ({ createExecTool } = await loadFreshBashExecPathModulesForTest());
+  });
+
+  afterEach(() => {
+    envSnapshot.restore();
+  });
+
+  it("allows commands whose head matches the operator allowlist", async () => {
+    if (isWin) {
+      return;
+    }
+    currentExecApprovals = createExecApprovals({
+      commandAllowlist: ["pwd"],
+      defaultCommandMode: "ask",
+      file: {
+        ...currentExecApprovals.file,
+        commandAllowlist: ["pwd"],
+        defaultCommandMode: "ask",
+      },
+    });
+
+    const tool = createExecTool({ host: "gateway", security: "allowlist", ask: "always" });
+    const result = await tool.execute("call-policy-allow-pwd", { command: "pwd" });
+    const text = normalizeText(result.content.find((c) => c.type === "text")?.text);
+
+    expect(text).toContain(process.cwd());
+    expect(text).not.toContain("requires approval");
+  });
+
+  it("denies commands whose head matches a deny rule", async () => {
+    currentExecApprovals = createExecApprovals({
+      defaultCommandMode: "allow",
+      commandRules: { rm: "deny" },
+      file: {
+        ...currentExecApprovals.file,
+        defaultCommandMode: "allow",
+        commandRules: { rm: "deny" },
+      },
+    });
+
+    const tool = createExecTool({ host: "gateway", security: "full", ask: "off" });
+
+    await expect(
+      tool.execute("call-policy-deny-rm", { command: "rm -f /tmp/openclaw-policy-test.txt" }),
+    ).rejects.toThrow('exec denied by command policy for "rm".');
+  });
+
+  it("blocks commands that touch operator-blocked paths", async () => {
+    if (isWin) {
+      return;
+    }
+    const blockedDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-blocked-"));
+    try {
+      currentExecApprovals = createExecApprovals({
+        defaultCommandMode: "allow",
+        pathBlocklist: [blockedDir],
+        file: {
+          ...currentExecApprovals.file,
+          defaultCommandMode: "allow",
+          pathBlocklist: [blockedDir],
+        },
+      });
+
+      const tool = createExecTool({ host: "gateway", security: "full", ask: "off" });
+
+      await expect(
+        tool.execute("call-policy-blocked-path", { command: `ls ${blockedDir}` }),
+      ).rejects.toThrow(/exec denied: path is blocked by operator policy/);
+    } finally {
+      fs.rmSync(blockedDir, { recursive: true, force: true });
+    }
+  });
+
+  it("allows explicitly allowlisted paths even when their parent is blocked", async () => {
+    if (isWin) {
+      return;
+    }
+    const blockedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-root-"));
+    const allowedChild = path.join(blockedRoot, "allowed");
+    fs.mkdirSync(allowedChild, { recursive: true });
+    try {
+      currentExecApprovals = createExecApprovals({
+        defaultCommandMode: "allow",
+        pathBlocklist: [blockedRoot],
+        pathAllowlist: [allowedChild],
+        file: {
+          ...currentExecApprovals.file,
+          defaultCommandMode: "allow",
+          pathBlocklist: [blockedRoot],
+          pathAllowlist: [allowedChild],
+        },
+      });
+
+      const tool = createExecTool({ host: "gateway", security: "full", ask: "off" });
+      const result = await tool.execute("call-policy-allow-path", {
+        command: "pwd",
+        workdir: allowedChild,
+      });
+      const text = normalizeText(result.content.find((c) => c.type === "text")?.text);
+
+      expect(text).toContain(allowedChild);
+    } finally {
+      fs.rmSync(blockedRoot, { recursive: true, force: true });
     }
   });
 });
