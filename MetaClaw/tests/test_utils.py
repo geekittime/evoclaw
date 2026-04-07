@@ -10,6 +10,8 @@ from metaclaw.api_server import (
     MetaClawAPIServer,
     _parse_inline_approval,
     _rewrite_messages_for_upstream_tool_history,
+    _strip_non_replayable_assistant_errors,
+    _strip_upstream_approval_artifacts,
     _should_preflatten_native_tool_history,
 )
 from metaclaw.config import MetaClawConfig
@@ -432,6 +434,161 @@ def test_rewrite_messages_for_upstream_tool_history_flattens_native_tool_context
     assert rewritten[3]["role"] == "user"
     assert "Tool result for exec (tool_call_id=call_delete)" in rewritten[3]["content"]
     assert "Continue the task using this tool result" in rewritten[3]["content"]
+
+
+def test_strip_upstream_approval_artifacts_removes_prompt_and_inline_command():
+    filtered = _strip_upstream_approval_artifacts(
+        [
+            {"role": "user", "content": "keep me"},
+            {
+                "role": "assistant",
+                "content": (
+                    "这个工具在调用前需要获得你的允许.\n"
+                    "Approval ID: appr_123\n"
+                    "使用 `approve` 进行批准，或使用 `reject` 进行拒绝."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "Sender (untrusted metadata):\n```json\n{}\n```\n\n"
+                    "[Tue 2026-04-07 12:50 GMT+8] approve appr_123"
+                ),
+                "provenance": {
+                    "kind": "internal_system",
+                    "sourceTool": "metaclaw-approval",
+                },
+            },
+            {
+                "role": "user",
+                "content": (
+                    "Sender (untrusted metadata): openclaw-control-ui\n"
+                    "[Tue 2026-04-07 12:51 GMT+8] approve appr_456"
+                ),
+            },
+            {
+                "role": "user",
+                "content": "The operator rejected the pending command. Continue the task safely.",
+                "provenance": {
+                    "kind": "internal_system",
+                    "sourceTool": "metaclaw-approval",
+                },
+            },
+        ]
+    )
+
+    assert filtered == [
+        {"role": "user", "content": "keep me"},
+        {
+            "role": "user",
+            "content": "The operator rejected the pending command. Continue the task safely.",
+            "provenance": {
+                "kind": "internal_system",
+                "sourceTool": "metaclaw-approval",
+            },
+        },
+    ]
+
+
+def test_strip_non_replayable_assistant_errors_removes_failed_turns():
+    filtered = _strip_non_replayable_assistant_errors(
+        [
+            {"role": "user", "content": "hello"},
+            {
+                "role": "assistant",
+                "content": [],
+                "stopReason": "error",
+                "errorMessage": "500 Internal Server Error",
+            },
+            {
+                "role": "assistant",
+                "content": [],
+                "stopReason": "aborted",
+            },
+            {"role": "user", "content": "hi"},
+        ]
+    )
+
+    assert filtered == [
+        {"role": "user", "content": "hello"},
+        {"role": "user", "content": "hi"},
+    ]
+
+
+def test_handle_request_strips_non_replayable_assistant_errors_before_forward(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setattr(
+        MetaClawAPIServer,
+        "_load_tokenizer",
+        lambda self: None,
+    )
+
+    config = MetaClawConfig(
+        mode="skills_only",
+        claw_type="openclaw",
+        llm_provider="custom",
+        llm_api_base="https://live.example/v1",
+        llm_api_key="live-key",
+        llm_model_id="live-model",
+        record_enabled=False,
+        record_dir=str(tmp_path),
+        task_brief_enabled=False,
+        user_profile_enabled=False,
+        session_report_enabled=False,
+        context_summary_enabled=False,
+    )
+    server = MetaClawAPIServer(
+        config=config,
+        output_queue=queue.Queue(),
+        submission_enabled=threading.Event(),
+    )
+
+    forwarded = {}
+
+    async def fake_forward(self, body):
+        forwarded["body"] = body
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "ok",
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setattr(MetaClawAPIServer, "_forward_to_llm", fake_forward)
+
+    asyncio.run(
+        server._handle_request(
+            body={
+                "messages": [
+                    {"role": "system", "content": "system"},
+                    {"role": "user", "content": "帮我删除 temp0 里的 py 文件"},
+                    {
+                        "role": "assistant",
+                        "content": [],
+                        "stopReason": "error",
+                        "errorMessage": "500 Internal Server Error",
+                    },
+                    {"role": "user", "content": "hi"},
+                ]
+            },
+            session_id="session-1",
+            turn_type="main",
+            session_done=False,
+        )
+    )
+
+    forwarded_messages = forwarded["body"]["messages"]
+    assert forwarded_messages == [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "帮我删除 temp0 里的 py 文件"},
+        {"role": "user", "content": "hi"},
+    ]
 
 
 def test_rewrite_messages_for_upstream_tool_history_handles_long_tool_chain():

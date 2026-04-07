@@ -16,6 +16,7 @@ import logging
 import os
 import signal
 import subprocess
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -26,7 +27,25 @@ from .config_store import ConfigStore
 
 logger = logging.getLogger(__name__)
 
-_PID_DIR = Path.home() / ".metaclaw"
+def _resolve_pid_dir() -> Path:
+    configured = os.environ.get("METACLAW_PID_DIR", "").strip()
+    candidates = [Path(configured).expanduser()] if configured else []
+    candidates.append(Path.home() / ".metaclaw")
+    candidates.append(Path(tempfile.gettempdir()) / "metaclaw")
+
+    for candidate in candidates:
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            probe = candidate / ".write-test"
+            probe.write_text("ok")
+            probe.unlink(missing_ok=True)
+            return candidate
+        except OSError:
+            continue
+    return Path(tempfile.gettempdir())
+
+
+_PID_DIR = _resolve_pid_dir()
 
 
 def pid_file_for_port(port: int) -> Path:

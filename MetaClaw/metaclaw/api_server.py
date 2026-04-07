@@ -564,9 +564,101 @@ def _messages_contain_native_tool_history(messages: list[dict]) -> bool:
     return False
 
 
+_METACLAW_APPROVAL_ID_RE = re.compile(r"Approval ID:\s*([A-Za-z0-9._:-]+)", re.IGNORECASE)
+_METACLAW_APPROVAL_PROMPT_RE = re.compile(
+    r"(这个工具在调用前需要获得你的允许|this tool requires your approval|使用\s*`?approve|使用\s*`?reject|use approve|use reject|require_approval)",
+    re.IGNORECASE,
+)
+_METACLAW_INLINE_APPROVAL_LINE_RE = re.compile(
+    r"^(?:\[[^\]]+\]\s*)?(approve|reject)(?:\s+[A-Za-z0-9._:-]+)?$",
+    re.IGNORECASE,
+)
+_METACLAW_INLINE_APPROVAL_METADATA_RE = re.compile(
+    r"^(?:Sender\b.*|Sender\s*\(.*\).*)$",
+    re.IGNORECASE,
+)
+
+
+def _is_approval_prompt_message(msg: dict[str, Any]) -> bool:
+    role = str(msg.get("role", "")).strip()
+    if role != "assistant":
+        return False
+    text = _flatten_message_content(msg.get("content")).strip()
+    if not text:
+        return False
+    return bool(
+        _METACLAW_APPROVAL_ID_RE.search(text)
+        and _METACLAW_APPROVAL_PROMPT_RE.search(text)
+    )
+
+
+def _is_inline_approval_command_message(msg: dict[str, Any]) -> bool:
+    role = str(msg.get("role", "")).strip()
+    if role != "user":
+        return False
+    provenance = msg.get("provenance")
+    text = _flatten_message_content(msg.get("content")).strip()
+    if not text:
+        return False
+    non_empty_lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not non_empty_lines:
+        return False
+    if not _METACLAW_INLINE_APPROVAL_LINE_RE.match(non_empty_lines[-1]):
+        return False
+    if (
+        isinstance(provenance, dict)
+        and provenance.get("kind") == "internal_system"
+        and provenance.get("sourceTool") == "metaclaw-approval"
+    ):
+        return True
+    prefix_lines = non_empty_lines[:-1]
+    return all(_METACLAW_INLINE_APPROVAL_METADATA_RE.match(line) for line in prefix_lines)
+
+
+def _strip_upstream_approval_artifacts(messages: list[dict]) -> list[dict]:
+    filtered: list[dict] = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        if _is_approval_prompt_message(msg) or _is_inline_approval_command_message(msg):
+            continue
+        filtered.append(msg)
+    return filtered
+
+
+def _is_non_replayable_assistant_error_message(msg: dict[str, Any]) -> bool:
+    role = str(msg.get("role", "")).strip()
+    if role != "assistant":
+        return False
+    stop_reason = str(msg.get("stopReason", "") or "").strip().lower()
+    error_message = str(msg.get("errorMessage", "") or "").strip()
+    if stop_reason not in {"error", "aborted"} and not error_message:
+        return False
+    content = msg.get("content")
+    if isinstance(content, str) and content.strip():
+        return False
+    if isinstance(content, list) and content:
+        return False
+    tool_calls = msg.get("tool_calls")
+    if isinstance(tool_calls, list) and tool_calls:
+        return False
+    return True
+
+
+def _strip_non_replayable_assistant_errors(messages: list[dict]) -> list[dict]:
+    filtered: list[dict] = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        if _is_non_replayable_assistant_error_message(msg):
+            continue
+        filtered.append(msg)
+    return filtered
+
+
 def _rewrite_messages_for_upstream_tool_history(messages: list[dict]) -> list[dict]:
     rewritten: list[dict] = []
-    for msg in messages:
+    for msg in _strip_non_replayable_assistant_errors(_strip_upstream_approval_artifacts(messages)):
         if not isinstance(msg, dict):
             continue
         role = str(msg.get("role", "user")).strip() or "user"
@@ -2796,6 +2888,15 @@ class MetaClawAPIServer:
                 model=str(body.get("model", "") or self._served_model),
                 turn=None,
             )
+        sanitized_history = _strip_non_replayable_assistant_errors(messages)
+        if sanitized_history != messages:
+            logger.info(
+                "[OpenClaw] stripped %d non-replayable assistant error turn(s) before request handling session=%s",
+                len(messages) - len(sanitized_history),
+                session_id,
+            )
+            messages = sanitized_history
+            body["messages"] = messages
         rewritten = 0
         for msg in messages:
             if (
@@ -3316,7 +3417,12 @@ class MetaClawAPIServer:
             headers.setdefault("HTTP-Referer", "https://github.com/aiming-lab/MetaClaw")
             headers.setdefault("X-Title", "MetaClaw")
 
-        message_list = send_body.get("messages") if isinstance(send_body.get("messages"), list) else []
+        raw_message_list = send_body.get("messages") if isinstance(send_body.get("messages"), list) else []
+        message_list = _strip_non_replayable_assistant_errors(
+            _strip_upstream_approval_artifacts(raw_message_list)
+        )
+        if message_list != raw_message_list:
+            send_body["messages"] = message_list
         contains_native_tool_history = _messages_contain_native_tool_history(message_list)
 
         def _normalize_upstream_result(result: dict[str, Any]) -> dict[str, Any]:

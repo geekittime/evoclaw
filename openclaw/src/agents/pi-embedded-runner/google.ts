@@ -223,6 +223,50 @@ function stripMetaclawApprovalArtifacts(messages: AgentMessage[]): AgentMessage[
   return touched ? filtered : messages;
 }
 
+function isNonReplayableAssistantErrorMessage(message: AgentMessage): boolean {
+  if (!message || typeof message !== "object" || message.role !== "assistant") {
+    return false;
+  }
+  const assistant = message as RawAssistantHistoryMessage & {
+    stopReason?: unknown;
+    errorMessage?: unknown;
+    tool_calls?: unknown;
+  };
+  const stopReason = typeof assistant.stopReason === "string" ? assistant.stopReason : "";
+  const errorMessage =
+    typeof assistant.errorMessage === "string" ? assistant.errorMessage.trim() : "";
+  if (stopReason !== "error" && stopReason !== "aborted" && !errorMessage) {
+    return false;
+  }
+  if (typeof assistant.content === "string" && assistant.content.trim().length > 0) {
+    return false;
+  }
+  if (Array.isArray(assistant.content) && assistant.content.length > 0) {
+    return false;
+  }
+  if (Array.isArray(assistant.tool_calls) && assistant.tool_calls.length > 0) {
+    return false;
+  }
+  return true;
+}
+
+function stripNonReplayableAssistantErrorMessages(messages: AgentMessage[]): AgentMessage[] {
+  let touched = false;
+  const filtered = messages.filter((message) => {
+    if (isNonReplayableAssistantErrorMessage(message)) {
+      touched = true;
+      return false;
+    }
+    return true;
+  });
+  if (touched) {
+    log.warn(
+      `sanitizeSessionHistory: dropped ${messages.length - filtered.length} assistant error message(s) before replay`,
+    );
+  }
+  return touched ? filtered : messages;
+}
+
 function describeAssistantContentKind(content: unknown): string {
   if (Array.isArray(content)) {
     return "array";
@@ -718,7 +762,10 @@ export async function sanitizeSessionHistory(params: {
       model: params.model,
     });
   const withoutMetaclawApprovalArtifacts = stripMetaclawApprovalArtifacts(params.messages);
-  const withInterSessionMarkers = annotateInterSessionUserMessages(withoutMetaclawApprovalArtifacts);
+  const withoutAssistantErrors = stripNonReplayableAssistantErrorMessages(
+    withoutMetaclawApprovalArtifacts,
+  );
+  const withInterSessionMarkers = annotateInterSessionUserMessages(withoutAssistantErrors);
   const canonicalizedAssistantHistory = canonicalizeAssistantHistoryMessages({
     messages: withInterSessionMarkers,
     sessionId: params.sessionId,

@@ -9,7 +9,9 @@ import { resolveFetch } from "../infra/fetch.js";
 import { CONTROL_UI_METACLAW_PROXY_PREFIX } from "./control-ui-contract.js";
 import { normalizeControlUiBasePath } from "./control-ui-shared.js";
 
-const DEFAULT_METACLAW_UPSTREAM = "http://127.0.0.1:30000";
+const FALLBACK_METACLAW_UPSTREAM = "http://127.0.0.1:30000";
+const DEFAULT_METACLAW_UPSTREAM =
+  process.env.OPENCLAW_METACLAW_UPSTREAM?.trim() || FALLBACK_METACLAW_UPSTREAM;
 const MAX_PROXY_BODY_BYTES = 1024 * 1024;
 const ALLOWED_METHODS = new Set(["GET", "HEAD", "POST", "PUT", "DELETE"]);
 const FORWARDED_REQUEST_HEADERS = new Set(["accept", "authorization", "content-type"]);

@@ -108,6 +108,13 @@ export type MetaclawState = {
 
 const SETTINGS_KEY = "openclaw.control.metaclaw.v1";
 const METACLAW_UPSTREAM_HEADER = "X-OpenClaw-MetaClaw-Upstream";
+const FALLBACK_METACLAW_API_BASE = "http://127.0.0.1:30000";
+
+function resolveBuiltMetaclawApiBase() {
+  const fromVite = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env
+    ?.VITE_METACLAW_UPSTREAM;
+  return (fromVite ?? "").trim();
+}
 
 class MetaclawRequestError extends Error {
   readonly statusCode: number | null;
@@ -143,7 +150,7 @@ export function createInitialMetaclawSectionsState(): MetaclawSectionsState {
 }
 
 function defaultApiBase() {
-  return "http://127.0.0.1:30000";
+  return resolveBuiltMetaclawApiBase() || FALLBACK_METACLAW_API_BASE;
 }
 
 function resolveControlUiBasePath() {
@@ -181,11 +188,18 @@ export function loadMetaclawSettings(): MetaclawSettings {
       return { apiBase: defaultApiBase(), token: "" };
     }
     const parsed = JSON.parse(raw) as Partial<MetaclawSettings>;
+    const storedApiBase =
+      typeof parsed.apiBase === "string" && parsed.apiBase.trim() ? parsed.apiBase.trim() : "";
+    const resolvedDefault = defaultApiBase();
     return {
       apiBase:
-        typeof parsed.apiBase === "string" && parsed.apiBase.trim()
-          ? parsed.apiBase.trim()
-          : defaultApiBase(),
+        storedApiBase &&
+        !(
+          storedApiBase === FALLBACK_METACLAW_API_BASE &&
+          resolvedDefault !== FALLBACK_METACLAW_API_BASE
+        )
+          ? storedApiBase
+          : resolvedDefault,
       token: typeof parsed.token === "string" ? parsed.token : "",
     };
   } catch {

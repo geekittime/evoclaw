@@ -1,0 +1,22 @@
+{
+  "entries": {
+    "/home/kangshijia/wangbinyu/temp/evoclaw/runtime/openclaw-state/openclaw.json": {
+      "lastKnownGood": {
+        "hash": "a2e9fd2a4ca017c274b30935b7d2eb559609408f506f88d1036dc886fa5bae2b",
+        "bytes": 3354,
+        "mtimeMs": 1775548514342.6367,
+        "ctimeMs": 1775548514342.6367,
+        "dev": "64768",
+        "ino": "14986824",
+        "mode": 384,
+        "nlink": 1,
+        "uid": 1006,
+        "gid": 1006,
+        "hasMeta": true,
+        "gatewayMode": "local",
+        "observedAt": "2026-04-07T07:55:18.601Z"
+      },
+      "lastObservedSuspiciousSignature": null
+    }
+  }
+}

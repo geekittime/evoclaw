@@ -557,6 +557,73 @@ describe("sanitizeSessionHistory", () => {
     expect(result.filter((message) => message.role === "toolResult")).toHaveLength(12);
   });
 
+  it("drops errored assistant turns from polluted MetaClaw replay history", async () => {
+    setNonGoogleModelApi();
+
+    const messages = castAgentMessages([
+      {
+        role: "user",
+        content: "帮我删除 temp0 里的 py 文件",
+      },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "text",
+            text:
+              "这个工具在调用前需要获得你的允许.\n" +
+              "Approval ID: appr_deadbeef\n" +
+              "使用 approve 进行批准，或使用 reject 进行拒绝.\n" +
+              "- exec (critical): require_approval | destructive delete command",
+          },
+        ],
+      },
+      {
+        role: "user",
+        content:
+          "Sender (untrusted metadata):\n```json\n{}\n```\n\n" +
+          "[Tue 2026-04-07 15:08 GMT+8] The operator rejected MetaClaw approval appr_deadbeef. " +
+          "Continue the current task with the existing conversation context without executing the blocked command.",
+        provenance: {
+          kind: "internal_system",
+          sourceSessionKey: "agent:main:main",
+          sourceTool: "metaclaw-approval",
+        },
+      },
+      {
+        role: "assistant",
+        content: [],
+        stopReason: "error",
+        errorMessage: "500 Internal Server Error",
+      },
+      {
+        role: "assistant",
+        content: [],
+        stopReason: "error",
+        errorMessage: "500 Internal Server Error",
+      },
+      {
+        role: "user",
+        content: "hi",
+      },
+    ]);
+
+    const result = await sanitizeSessionHistory({
+      messages,
+      modelApi: "openai-completions",
+      provider: "metaclaw",
+      modelId: "deepseek-chat",
+      sessionManager: mockSessionManager,
+      sessionId: TEST_SESSION_ID,
+    });
+
+    expect(result.map((message) => message.role)).toEqual(["user", "user", "user"]);
+    expect(JSON.stringify(result)).not.toContain("Approval ID:");
+    expect(JSON.stringify(result)).not.toContain("500 Internal Server Error");
+    expect(JSON.stringify(result)).toContain("Continue the current task");
+    expect(JSON.stringify(result)).toContain("hi");
+  });
+
   it("drops stale assistant usage snapshots kept before latest compaction summary", async () => {
     vi.mocked(mockedHelpers.isGoogleModelApi).mockReturnValue(false);
 
