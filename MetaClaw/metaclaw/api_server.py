@@ -188,7 +188,10 @@ _QWEN_TOOL_CALL_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL
 _INLINE_FEEDBACK_PATTERNS = [
     re.compile(r"^/(?:feedback|fb|fd)\s+(good|bad)\s*(.*)$", re.IGNORECASE),
 ]
-_INLINE_APPROVAL_RE = re.compile(r"^(?:/)?(approve|reject)\s*([A-Za-z0-9_-]+)?\s*$", re.IGNORECASE)
+_INLINE_APPROVAL_RE = re.compile(
+    r"^(?:/)?(approve|reject)\s+([A-Za-z0-9._:-]+)\s*$",
+    re.IGNORECASE,
+)
 _OPENCLAW_SKILLS_SECTION_RE = re.compile(
     r"(?:\n|^)## Skills \(mandatory\)\n.*?</available_skills>\s*",
     re.DOTALL,
@@ -518,6 +521,130 @@ def _render_context_messages(messages: list[dict], max_chars: int = 12000) -> st
     return "\n".join(rendered)
 
 
+
+def _render_tool_calls_for_upstream_text(tool_calls: list[dict]) -> str:
+    rendered: list[str] = []
+    for idx, tool_call in enumerate(tool_calls, start=1):
+        if not isinstance(tool_call, dict):
+            continue
+        function_obj = tool_call.get("function") if isinstance(tool_call.get("function"), dict) else {}
+        tool_name = str(function_obj.get("name") or tool_call.get("name") or f"tool_{idx}").strip()
+        arguments = function_obj.get("arguments")
+        if not isinstance(arguments, str):
+            try:
+                arguments = json.dumps(arguments or {}, ensure_ascii=False)
+            except Exception:
+                arguments = "{}"
+        tool_call_id = str(tool_call.get("id") or f"call_{idx}").strip()
+        rendered.append(
+            f"- tool_call_id: {tool_call_id}\n"
+            f"  name: {tool_name or f'tool_{idx}'}\n"
+            f"  arguments: {arguments}"
+        )
+    return "\n".join(rendered)
+
+
+def _messages_contain_native_tool_history(messages: list[dict]) -> bool:
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role", "")).strip()
+        if role in {"tool", "toolResult"}:
+            return True
+        if role != "assistant":
+            continue
+        raw_content = msg.get("content")
+        if isinstance(raw_content, list):
+            _, inline_tool_calls = _normalize_assistant_content_parts(raw_content)
+            if inline_tool_calls:
+                return True
+        tool_calls = msg.get("tool_calls")
+        if isinstance(tool_calls, list) and tool_calls:
+            return True
+    return False
+
+
+def _rewrite_messages_for_upstream_tool_history(messages: list[dict]) -> list[dict]:
+    rewritten: list[dict] = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role", "user")).strip() or "user"
+        if role == "developer":
+            role = "system"
+        if role == "toolResult":
+            role = "tool"
+
+        if role == "assistant":
+            raw_content = msg.get("content")
+            if isinstance(raw_content, list):
+                content_text, tool_calls = _normalize_assistant_content_parts(raw_content)
+            else:
+                content_text = _flatten_message_content(raw_content)
+                tool_calls = (
+                    _normalize_tool_calls_for_template(msg.get("tool_calls"))
+                    if isinstance(msg.get("tool_calls"), list)
+                    else []
+                )
+
+            content_blocks: list[str] = []
+            if content_text.strip():
+                content_blocks.append(content_text.strip())
+            if tool_calls:
+                content_blocks.append(
+                    "The assistant requested the following tool calls:\n"
+                    + _render_tool_calls_for_upstream_text(tool_calls)
+                )
+            if content_blocks:
+                rewritten.append({"role": "assistant", "content": "\n\n".join(content_blocks)})
+            continue
+
+        if role == "tool":
+            tool_name = str(msg.get("name") or msg.get("toolName") or "tool").strip() or "tool"
+            tool_call_id = str(msg.get("tool_call_id") or msg.get("toolCallId") or "").strip()
+            result_text = _flatten_message_content(msg.get("content"))
+            label = f"Tool result for {tool_name}"
+            if tool_call_id:
+                label += f" (tool_call_id={tool_call_id})"
+            rewritten.append(
+                {
+                    "role": "user",
+                    "content": (
+                        f"{label}:\n{result_text or '(no output)'}\n\n"
+                        "Continue the task using this tool result. If you need another tool, call it normally."
+                    ),
+                }
+            )
+            continue
+
+        normalized_role = role if role in {"system", "user", "assistant"} else "user"
+        content_text = _flatten_message_content(msg.get("content"))
+        if not content_text and normalized_role != "system":
+            continue
+        rewritten.append({"role": normalized_role, "content": content_text})
+    return rewritten
+
+
+def _should_preflatten_native_tool_history(
+    *,
+    api_base: str,
+    model_id: str,
+    llm_provider: str,
+    contains_native_tool_history: bool,
+) -> bool:
+    if not contains_native_tool_history:
+        return False
+    lowered_api_base = str(api_base or "").strip().lower()
+    lowered_model_id = str(model_id or "").strip().lower()
+    lowered_provider = str(llm_provider or "").strip().lower()
+    if "deepseek" in lowered_api_base or "deepseek" in lowered_model_id:
+        return True
+    # Custom OpenAI-compatible bridges are the most common place where
+    # native OpenAI tool-history payloads are rejected. Prefer the
+    # flattened transcript form up front once there is prior tool state.
+    return lowered_provider == "custom"
+
+
 def _extract_context_summary_text(messages: list[dict]) -> str:
     marker = "## Conversation Summary"
     for msg in messages:
@@ -584,12 +711,32 @@ def _parse_inline_approval(text: str) -> tuple[str, str] | None:
     raw = (text or "").strip()
     if not raw:
         return None
-    match = _INLINE_APPROVAL_RE.match(raw)
-    if not match:
-        return None
-    action = str(match.group(1) or "").strip().lower()
-    approval_id = str(match.group(2) or "").strip()
-    return action, approval_id
+    candidates: list[str] = [raw]
+    for line in reversed(raw.splitlines()):
+        candidate = line.strip()
+        if not candidate or candidate.startswith("```"):
+            continue
+        if candidate.lower().startswith("sender (untrusted metadata):"):
+            continue
+        if candidate.startswith("[") and "]" in candidate:
+            candidate = candidate.split("]", 1)[1].strip()
+        if candidate:
+            candidates.append(candidate)
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        normalized = candidate.strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        match = _INLINE_APPROVAL_RE.match(normalized)
+        if not match:
+            continue
+        action = str(match.group(1) or "").strip().lower()
+        approval_id = str(match.group(2) or "").strip()
+        if approval_id:
+            return action, approval_id
+    return None
 
 
 def _parse_inline_whitelist(text: str) -> tuple[str, str, str] | None:
@@ -3141,6 +3288,7 @@ class MetaClawAPIServer:
     # LLM forwarding (skills_only mode)                                   #
     # ------------------------------------------------------------------ #
 
+
     async def _forward_to_llm(self, body: dict[str, Any]) -> dict[str, Any]:
         """Forward to a real OpenAI-compatible API (skills_only mode)."""
         import httpx
@@ -3168,16 +3316,10 @@ class MetaClawAPIServer:
             headers.setdefault("HTTP-Referer", "https://github.com/aiming-lab/MetaClaw")
             headers.setdefault("X-Title", "MetaClaw")
 
-        try:
-            async with httpx.AsyncClient(timeout=600.0) as client:
-                resp = await client.post(
-                    f"{api_base}/chat/completions",
-                    json=send_body,
-                    headers=headers,
-                )
-                resp.raise_for_status()
-                result = resp.json()
+        message_list = send_body.get("messages") if isinstance(send_body.get("messages"), list) else []
+        contains_native_tool_history = _messages_contain_native_tool_history(message_list)
 
+        def _normalize_upstream_result(result: dict[str, Any]) -> dict[str, Any]:
             # Robustness: if the upstream API returns tool calls / reasoning
             # inlined in content text instead of structured fields, parse them.
             for choice in result.get("choices", []):
@@ -3197,16 +3339,86 @@ class MetaClawAPIServer:
                     if parsed_tools and not has_tool_calls:
                         msg["tool_calls"] = parsed_tools
                         choice["finish_reason"] = "tool_calls"
-
             return result
-        except httpx.HTTPStatusError as e:
-            upstream_status = e.response.status_code
-            upstream_body = e.response.text[:500]
-            logger.error("[OpenClaw] upstream LLM error: %s %s", upstream_status, upstream_body[:200])
-            # Pass through 4xx client errors so callers see the real cause
-            # (e.g. 401 invalid API key, 429 rate limited). Upstream 5xx become 502.
-            http_status = upstream_status if 400 <= upstream_status < 500 else 502
-            raise HTTPException(status_code=http_status, detail=upstream_body) from e
+
+        async def _post_completion(client: httpx.AsyncClient, request_body: dict[str, Any]) -> dict[str, Any]:
+            resp = await client.post(
+                f"{api_base}/chat/completions",
+                json=request_body,
+                headers=headers,
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+        compat_messages = _rewrite_messages_for_upstream_tool_history(message_list) if contains_native_tool_history else None
+        use_initial_compat_body = _should_preflatten_native_tool_history(
+            api_base=api_base,
+            model_id=str(send_body.get("model", "") or self.config.llm_model_id),
+            llm_provider=self.config.llm_provider,
+            contains_native_tool_history=contains_native_tool_history,
+        )
+        initial_body = (
+            {**send_body, "messages": compat_messages}
+            if use_initial_compat_body and compat_messages is not None
+            else send_body
+        )
+        if use_initial_compat_body and compat_messages is not None:
+            logger.info(
+                "[OpenClaw] pre-flattening native tool history for upstream model=%s provider=%s",
+                str(initial_body.get("model", "") or self.config.llm_model_id),
+                self.config.llm_provider,
+            )
+            log_llm_prompt(
+                "tool-history-compat-initial",
+                compat_messages,
+                model_id=str(initial_body.get("model", "") or self.config.llm_model_id),
+            )
+
+        try:
+            async with httpx.AsyncClient(timeout=600.0) as client:
+                try:
+                    return _normalize_upstream_result(await _post_completion(client, initial_body))
+                except httpx.HTTPStatusError as e:
+                    upstream_status = e.response.status_code
+                    upstream_body = e.response.text[:500]
+                    retryable_status = upstream_status in {400, 404, 405, 422}
+                    if (
+                        not retryable_status
+                        or not contains_native_tool_history
+                        or use_initial_compat_body
+                    ):
+                        logger.error(
+                            "[OpenClaw] upstream LLM error: %s %s",
+                            upstream_status,
+                            upstream_body[:200],
+                        )
+                        http_status = upstream_status if 400 <= upstream_status < 500 else 502
+                        raise HTTPException(status_code=http_status, detail=upstream_body) from e
+
+                    compat_body = {**send_body, "messages": compat_messages}
+                    logger.warning(
+                        "[OpenClaw] upstream rejected native tool history; retrying with flattened tool context status=%s",
+                        upstream_status,
+                    )
+                    log_llm_prompt(
+                        "tool-history-compat-retry",
+                        compat_messages,
+                        model_id=str(compat_body.get("model", "") or self.config.llm_model_id),
+                    )
+                    try:
+                        return _normalize_upstream_result(await _post_completion(client, compat_body))
+                    except httpx.HTTPStatusError as retry_error:
+                        retry_status = retry_error.response.status_code
+                        retry_body = retry_error.response.text[:500]
+                        logger.error(
+                            "[OpenClaw] upstream LLM compat retry failed: %s %s",
+                            retry_status,
+                            retry_body[:200],
+                        )
+                        http_status = retry_status if 400 <= retry_status < 500 else 502
+                        raise HTTPException(status_code=http_status, detail=retry_body) from retry_error
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error("[OpenClaw] LLM forward failed: %s", e, exc_info=True)
             raise HTTPException(status_code=502, detail=f"LLM forward error: {e}") from e

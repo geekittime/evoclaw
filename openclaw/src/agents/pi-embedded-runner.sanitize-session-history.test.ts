@@ -385,6 +385,178 @@ describe("sanitizeSessionHistory", () => {
     expect(first.content as string).toContain("sourceSession=agent:main:req");
   });
 
+  it("drops MetaClaw approval prompts and inline approval command messages from replay history", async () => {
+    setNonGoogleModelApi();
+
+    const messages = castAgentMessages([
+      { role: "user", content: "session bootstrap" },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "hello" }],
+      },
+      { role: "user", content: "帮我删除 temp0 里的 py 文件" },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "text",
+            text:
+              "这个工具在调用前需要获得你的允许.\n" +
+              "Approval ID: appr_123\n" +
+              "使用 approve 进行批准，或使用 reject 进行拒绝.\n" +
+              "- exec (low): require_approval",
+          },
+        ],
+      },
+      {
+        role: "user",
+        content:
+          "Sender (untrusted metadata):\n```json\n{}\n```\n\n[Tue 2026-04-07 10:45 GMT+8] approve appr_123",
+        provenance: {
+          kind: "internal_system",
+          sourceSessionKey: "agent:main:main",
+          sourceTool: "metaclaw-approval",
+        },
+      },
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "让我先检查一下目录内容。" },
+          {
+            type: "toolCall",
+            id: "call_1",
+            name: "exec",
+            arguments: { command: "ls -la temp0" },
+          },
+        ],
+        stopReason: "toolUse",
+      },
+      {
+        role: "toolResult",
+        toolCallId: "call_1",
+        toolName: "exec",
+        content: [{ type: "text", text: "total 0" }],
+        isError: false,
+      },
+    ]);
+
+    const result = await sanitizeSessionHistory({
+      messages,
+      modelApi: "openai-completions",
+      provider: "metaclaw",
+      modelId: "deepseek-chat",
+      sessionManager: mockSessionManager,
+      sessionId: TEST_SESSION_ID,
+    });
+
+    expect(result.map((message) => message.role)).toEqual([
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+      "toolResult",
+    ]);
+    expect(JSON.stringify(result)).not.toContain("Approval ID:");
+    expect(JSON.stringify(result)).not.toContain("approve appr_123");
+  });
+
+  it("preserves MetaClaw internal continuation guidance when it is not a literal approval command", async () => {
+    setNonGoogleModelApi();
+
+    const messages = castAgentMessages([
+      {
+        role: "user",
+        content: "The operator rejected the pending command. Continue the task without repeating it.",
+        provenance: {
+          kind: "internal_system",
+          sourceSessionKey: "agent:main:main",
+          sourceTool: "metaclaw-approval",
+        },
+      },
+    ]);
+
+    const result = await sanitizeSessionHistory({
+      messages,
+      modelApi: "openai-completions",
+      provider: "metaclaw",
+      modelId: "deepseek-chat",
+      sessionManager: mockSessionManager,
+      sessionId: TEST_SESSION_ID,
+    });
+
+    expect(result).toEqual(messages);
+  });
+
+  it("drops repeated MetaClaw approval artifacts across a long tool chain", async () => {
+    setNonGoogleModelApi();
+
+    const messages = castAgentMessages([
+      { role: "user", content: "session bootstrap" },
+      { role: "assistant", content: [{ type: "text", text: "hello" }] },
+    ]);
+
+    for (let index = 0; index < 12; index += 1) {
+      messages.push({
+        role: "assistant",
+        content: [
+          {
+            type: "text",
+            text:
+              "这个工具在调用前需要获得你的允许.\n" +
+              `Approval ID: appr_${index}\n` +
+              "使用 approve 进行批准，或使用 reject 进行拒绝.\n" +
+              "- exec (low): require_approval",
+          },
+        ],
+      });
+      messages.push({
+        role: "user",
+        content:
+          "Sender (untrusted metadata):\n```json\n{}\n```\n\n" +
+          `[Tue 2026-04-07 10:${String(index).padStart(2, "0")} GMT+8] approve appr_${index}`,
+        provenance: {
+          kind: "internal_system",
+          sourceSessionKey: "agent:main:main",
+          sourceTool: "metaclaw-approval",
+        },
+      });
+      messages.push({
+        role: "assistant",
+        content: [
+          { type: "text", text: `step ${index}` },
+          {
+            type: "toolCall",
+            id: `call_${index}`,
+            name: "exec",
+            arguments: { command: `echo ${index}` },
+          },
+        ],
+        stopReason: "toolUse",
+      });
+      messages.push({
+        role: "toolResult",
+        toolCallId: `call_${index}`,
+        toolName: "exec",
+        content: [{ type: "text", text: `output ${index}` }],
+        isError: false,
+      });
+    }
+
+    const result = await sanitizeSessionHistory({
+      messages,
+      modelApi: "openai-completions",
+      provider: "metaclaw",
+      modelId: "deepseek-chat",
+      sessionManager: mockSessionManager,
+      sessionId: TEST_SESSION_ID,
+    });
+
+    expect(result).toHaveLength(26);
+    expect(JSON.stringify(result)).not.toContain("Approval ID:");
+    expect(JSON.stringify(result)).not.toContain("approve appr_");
+    expect(result.filter((message) => message.role === "toolResult")).toHaveLength(12);
+  });
+
   it("drops stale assistant usage snapshots kept before latest compaction summary", async () => {
     vi.mocked(mockedHelpers.isGoogleModelApi).mockReturnValue(false);
 

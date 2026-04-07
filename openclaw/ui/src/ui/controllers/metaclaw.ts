@@ -262,6 +262,71 @@ function retainLatestPendingApproval(
   return [pending[pending.length - 1]!];
 }
 
+function sortPendingApprovals(
+  pending: MetaclawPendingApproval[],
+): MetaclawPendingApproval[] {
+  return [...pending].sort((left, right) =>
+    String(left.created_at ?? "").localeCompare(String(right.created_at ?? "")),
+  );
+}
+
+async function fetchPendingApprovals(
+  state: Pick<MetaclawState, "sessionKey" | "metaclawApiBase" | "metaclawToken">,
+  fallbackSessionIds: string[] = [],
+): Promise<MetaclawPendingApproval[]> {
+  const attempts: string[] = [];
+  const seen = new Set<string>();
+  const addAttempt = (sessionId: string) => {
+    const normalized = sessionId.trim();
+    if (!normalized || seen.has(normalized)) {
+      return;
+    }
+    seen.add(normalized);
+    attempts.push(normalized);
+  };
+  addAttempt(state.sessionKey);
+  for (const fallbackSessionId of fallbackSessionIds) {
+    addAttempt(fallbackSessionId);
+  }
+
+  const pendingById = new Map<string, MetaclawPendingApproval>();
+  let reachable = false;
+  let lastError: unknown = null;
+
+  for (const sessionId of attempts) {
+    try {
+      const result = await metaclawRequest<{ pending: MetaclawPendingApproval[] }>(
+        state,
+        `/v1/sandbox/pending?session_id=${encodeURIComponent(sessionId)}`,
+      );
+      reachable = true;
+      for (const item of Array.isArray(result.pending) ? result.pending : []) {
+        const approvalId = String(item.approval_id ?? "").trim();
+        if (!approvalId) {
+          continue;
+        }
+        pendingById.set(approvalId, item);
+      }
+    } catch (error) {
+      const requestError = toMetaclawRequestError(error);
+      lastError = requestError;
+      reachable ||= requestError.reachable;
+    }
+  }
+
+  if (!reachable && lastError) {
+    throw toMetaclawRequestError(lastError);
+  }
+
+  return sortPendingApprovals([...pendingById.values()]);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
 async function readMetaclawErrorMessage(response: Response): Promise<string> {
   const contentType = response.headers.get("content-type") ?? "";
   if (contentType.includes("application/json")) {
@@ -587,6 +652,38 @@ export async function resolveMetaclawApproval(
     applyMutationError(state, error);
   } finally {
     state.metaclawSaving = false;
+  }
+}
+
+export async function waitForMetaclawApprovalResolution(
+  state: MetaclawState,
+  approvalId: string,
+  fallbackSessionIds: string[] = [],
+  opts: {
+    timeoutMs?: number;
+    pollIntervalMs?: number;
+  } = {},
+) {
+  const timeoutMs = opts.timeoutMs ?? 2500;
+  const pollIntervalMs = opts.pollIntervalMs ?? 250;
+  const startedAt = Date.now();
+
+  while (true) {
+    const pending = await fetchPendingApprovals(state, fallbackSessionIds);
+    state.metaclawPendingApprovals = retainLatestPendingApproval(pending);
+    state.metaclawSections = {
+      ...state.metaclawSections,
+      pendingApprovals: createSectionState("ready"),
+    };
+    state.metaclawConnected = true;
+    if (!pending.some((item) => item.approval_id === approvalId)) {
+      state.metaclawError = null;
+      return;
+    }
+    if (Date.now() - startedAt >= timeoutMs) {
+      throw new Error(`MetaClaw did not consume approval ${approvalId}.`);
+    }
+    await delay(pollIntervalMs);
   }
 }
 

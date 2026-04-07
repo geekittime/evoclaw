@@ -69,6 +69,11 @@ const GOOGLE_SCHEMA_UNSUPPORTED_KEYWORDS = new Set([
 ]);
 
 const INTER_SESSION_PREFIX_BASE = "[Inter-session message]";
+const METACLAW_APPROVAL_ID_RE = /Approval ID:\s*([A-Za-z0-9._:-]+)/i;
+const METACLAW_APPROVAL_PROMPT_RE =
+  /(这个工具在调用前需要获得你的允许|this tool requires your approval|使用 approve\b|使用 reject\b|use approve\b|use reject\b|require_approval)/i;
+const METACLAW_INLINE_APPROVAL_LINE_RE =
+  /^(?:\[[^\]]+\]\s*)?(approve|reject)(?:\s+[A-Za-z0-9._:-]+)?$/i;
 type AssistantHistoryMessage = Extract<AgentMessage, { role: "assistant" }>;
 type RawAssistantHistoryMessage = Omit<AssistantHistoryMessage, "content"> & { content?: unknown };
 
@@ -149,6 +154,73 @@ function annotateInterSessionUserMessages(messages: AgentMessage[]): AgentMessag
     } as AgentMessage);
   }
   return touched ? out : messages;
+}
+
+function extractMessagePlainText(message: AgentMessage): string {
+  const content = (message as { content?: unknown }).content;
+  if (typeof content === "string") {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return "";
+  }
+  return content
+    .filter(
+      (block): block is { type?: unknown; text?: unknown } =>
+        Boolean(block) && typeof block === "object",
+    )
+    .map((block) =>
+      block.type === "text" && typeof block.text === "string" ? block.text : "",
+    )
+    .filter(Boolean)
+    .join("\n");
+}
+
+function isMetaclawApprovalPromptMessage(message: AgentMessage): boolean {
+  if (message.role !== "assistant") {
+    return false;
+  }
+  const text = extractMessagePlainText(message).trim();
+  if (!text) {
+    return false;
+  }
+  return METACLAW_APPROVAL_ID_RE.test(text) && METACLAW_APPROVAL_PROMPT_RE.test(text);
+}
+
+function isMetaclawInlineApprovalCommandMessage(message: AgentMessage): boolean {
+  if (message.role !== "user") {
+    return false;
+  }
+  const provenance = normalizeInputProvenance((message as { provenance?: unknown }).provenance);
+  if (provenance?.kind !== "internal_system" || provenance.sourceTool !== "metaclaw-approval") {
+    return false;
+  }
+  const text = extractMessagePlainText(message).trim();
+  if (!text) {
+    return false;
+  }
+  const lastNonEmptyLine =
+    text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .at(-1) ?? "";
+  return METACLAW_INLINE_APPROVAL_LINE_RE.test(lastNonEmptyLine);
+}
+
+function stripMetaclawApprovalArtifacts(messages: AgentMessage[]): AgentMessage[] {
+  let touched = false;
+  const filtered = messages.filter((message) => {
+    if (
+      isMetaclawApprovalPromptMessage(message) ||
+      isMetaclawInlineApprovalCommandMessage(message)
+    ) {
+      touched = true;
+      return false;
+    }
+    return true;
+  });
+  return touched ? filtered : messages;
 }
 
 function describeAssistantContentKind(content: unknown): string {
@@ -645,7 +717,8 @@ export async function sanitizeSessionHistory(params: {
       env: params.env,
       model: params.model,
     });
-  const withInterSessionMarkers = annotateInterSessionUserMessages(params.messages);
+  const withoutMetaclawApprovalArtifacts = stripMetaclawApprovalArtifacts(params.messages);
+  const withInterSessionMarkers = annotateInterSessionUserMessages(withoutMetaclawApprovalArtifacts);
   const canonicalizedAssistantHistory = canonicalizeAssistantHistoryMessages({
     messages: withInterSessionMarkers,
     sessionId: params.sessionId,

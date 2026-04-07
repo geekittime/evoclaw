@@ -7,6 +7,7 @@ import {
   loadMetaclawState,
   resolveMetaclawApproval,
   submitMetaclawFeedback,
+  waitForMetaclawApprovalResolution,
   type MetaclawState,
 } from "./metaclaw.ts";
 
@@ -377,6 +378,47 @@ describe("loadMetaclawState", () => {
 
     expect(state.metaclawError).toBeNull();
     expect(fetchMock).toHaveBeenCalled();
+
+    vi.unstubAllGlobals();
+  });
+
+  it("waits until an inline approval disappears from pending state before succeeding", async () => {
+    let pendingCalls = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (
+        url.endsWith(
+          "/openclaw/__openclaw/metaclaw/v1/sandbox/pending?session_id=agent%3Amain%3Amain",
+        )
+      ) {
+        pendingCalls += 1;
+        return jsonResponse({
+          pending:
+            pendingCalls === 1
+              ? [
+                  {
+                    approval_id: "appr_pending",
+                    session_id: "agent:main:main",
+                    status: "pending",
+                    created_at: "2026-04-07 10:00:00",
+                    updated_at: "2026-04-07 10:00:00",
+                  },
+                ]
+              : [],
+        });
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+
+    const state = createState();
+    await waitForMetaclawApprovalResolution(state, "appr_pending", [], {
+      timeoutMs: 1000,
+      pollIntervalMs: 0,
+    });
+
+    expect(state.metaclawPendingApprovals).toEqual([]);
+    expect(pendingCalls).toBe(2);
 
     vi.unstubAllGlobals();
   });

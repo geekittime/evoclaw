@@ -49,6 +49,19 @@ def _normalize_command(value: str) -> str:
     return " ".join(_extract_words(value or ""))
 
 
+def _command_lookup_candidates(value: str) -> list[str]:
+    normalized = _normalize_command(value)
+    if not normalized:
+        return []
+    words = _extract_words(normalized)
+    head = words[0] if words else ""
+    candidates: list[str] = []
+    for candidate in (normalized, head):
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+    return candidates
+
+
 @dataclass
 class SandboxDecision:
     tool_call_id: str
@@ -97,13 +110,16 @@ class SandboxWhitelistManager:
         return True
 
     def get_command_mode(self, command: str) -> str | None:
-        normalized = _normalize_command(command)
-        if not normalized:
+        candidates = _command_lookup_candidates(command)
+        if not candidates:
             return None
         with self._lock:
             rules = self._state.get("command_rules", {})
-            value = str(rules.get(normalized, "") or "").strip().lower()
-            return value if value in {"allow", "ask", "deny"} else None
+            for candidate in candidates:
+                value = str(rules.get(candidate, "") or "").strip().lower()
+                if value in {"allow", "ask", "deny"}:
+                    return value
+            return None
 
     def set_default_command_mode(self, mode: str) -> bool:
         normalized_mode = str(mode or "").strip().lower()
@@ -193,12 +209,12 @@ class SandboxWhitelistManager:
         return True
 
     def is_command_allowed(self, command: str) -> bool:
-        normalized = _normalize_command(command)
-        if not normalized:
+        candidates = _command_lookup_candidates(command)
+        if not candidates:
             return False
         with self._lock:
             commands = self._state.get("command_allowlist", [])
-            return normalized in commands
+            return any(candidate in commands for candidate in candidates)
 
     def is_path_allowed(self, path: str) -> bool:
         normalized = _normalize_path(path)

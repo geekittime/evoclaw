@@ -90,6 +90,7 @@ import {
   saveMetaclawSandboxPolicy,
   saveMetaclawSkillSelection,
   submitMetaclawFeedback,
+  waitForMetaclawApprovalResolution,
 } from "./controllers/metaclaw.ts";
 import { loadNodes } from "./controllers/nodes.ts";
 import { loadPresence } from "./controllers/presence.ts";
@@ -1620,6 +1621,11 @@ export function renderApp(state: AppViewState) {
                       sourceSessionKey: state.sessionKey,
                       appendAssistantErrorOnFailure: false,
                     });
+                    await waitForMetaclawApprovalResolution(
+                      state,
+                      approvalId,
+                      buildMetaclawFallbackSessionIds(state),
+                    );
                   } catch (error) {
                     state.metaclawError = error instanceof Error ? error.message : String(error);
                     throw error;
