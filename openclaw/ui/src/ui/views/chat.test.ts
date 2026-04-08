@@ -991,7 +991,7 @@ describe("chat view", () => {
     expect(container.textContent).toContain("Bad");
   });
 
-  it("shows pending MetaClaw approvals with Approve and Reject buttons even when Studio is collapsed", async () => {
+  it("does not show the old top approval banner when approvals are pending", async () => {
     const onApprove = vi.fn();
     const onReject = vi.fn();
     const container = document.createElement("div");
@@ -1031,25 +1031,17 @@ exec_command: pwd`,
         container,
       );
 
-      expect(container.textContent).toContain("Pending Command Approvals");
-      expect(container.textContent).toContain("Approve");
-      expect(container.textContent).toContain("Reject");
+      expect(container.textContent).not.toContain("Pending Command Approvals");
       expect(container.textContent).not.toContain("这个工具在调用前需要获得你的允许");
       expect(container.textContent).not.toContain("Approval ID: approval-1");
-
-      const buttons = Array.from(container.querySelectorAll("button"));
-      buttons.find((button) => button.textContent?.includes("Approve"))?.click();
-      buttons.find((button) => button.textContent?.includes("Reject"))?.click();
-      await flushTasks();
-
-      expect(onApprove).toHaveBeenCalledWith("approval-1");
-      expect(onReject).toHaveBeenCalledWith("approval-1");
+      expect(onApprove).not.toHaveBeenCalled();
+      expect(onReject).not.toHaveBeenCalled();
     } finally {
       cleanupChatModuleState();
     }
   });
 
-  it("renders top approval buttons from native OpenClaw /approve prompts when the queue is not yet available", async () => {
+  it("does not render the old top approval banner from native OpenClaw /approve prompts", async () => {
     const onApprove = vi.fn();
     const onReject = vi.fn();
     const container = document.createElement("div");
@@ -1084,25 +1076,16 @@ If the short code is ambiguous, use the full id in /approve.`,
         container,
       );
 
-      expect(container.textContent).toContain("Pending Command Approvals");
-      expect(container.textContent).toContain("appr_af1056110cf3");
-      expect(container.textContent).toContain("Approve");
-      expect(container.textContent).toContain("Reject");
+      expect(container.textContent).not.toContain("Pending Command Approvals");
       expect(container.textContent).not.toContain("Reply with: /approve 117ba06d");
-
-      const buttons = Array.from(container.querySelectorAll("button"));
-      buttons.find((button) => button.textContent?.includes("Approve"))?.click();
-      buttons.find((button) => button.textContent?.includes("Reject"))?.click();
-      await flushTasks();
-
-      expect(onApprove).toHaveBeenCalledWith("appr_af1056110cf3");
-      expect(onReject).toHaveBeenCalledWith("appr_af1056110cf3");
+      expect(onApprove).not.toHaveBeenCalled();
+      expect(onReject).not.toHaveBeenCalled();
     } finally {
       cleanupChatModuleState();
     }
   });
 
-  it("renders top approval buttons from tool-result approval prompts even when the assistant only paraphrases the confirmation", async () => {
+  it("does not render the old top approval banner from tool-result approval prompts", async () => {
     const onApprove = vi.fn();
     const onReject = vi.fn();
     const container = document.createElement("div");
@@ -1157,24 +1140,15 @@ If the short code is ambiguous, use the full id in /approve.`,
         container,
       );
 
-      expect(container.textContent).toContain("Pending Command Approvals");
-      expect(container.textContent).toContain("appr_af1056110cf3");
-      expect(container.textContent).toContain("Approve");
-      expect(container.textContent).toContain("Reject");
-
-      const buttons = Array.from(container.querySelectorAll("button"));
-      buttons.find((button) => button.textContent?.includes("Approve"))?.click();
-      buttons.find((button) => button.textContent?.includes("Reject"))?.click();
-      await flushTasks();
-
-      expect(onApprove).toHaveBeenCalledWith("appr_af1056110cf3");
-      expect(onReject).toHaveBeenCalledWith("appr_af1056110cf3");
+      expect(container.textContent).not.toContain("Pending Command Approvals");
+      expect(onApprove).not.toHaveBeenCalled();
+      expect(onReject).not.toHaveBeenCalled();
     } finally {
       cleanupChatModuleState();
     }
   });
 
-  it("renders top approval buttons from structured tool-result approval metadata without relying on approval text", async () => {
+  it("does not render the old top approval banner from structured approval metadata", async () => {
     const onApprove = vi.fn();
     const onReject = vi.fn();
     const container = document.createElement("div");
@@ -1226,18 +1200,9 @@ If the short code is ambiguous, use the full id in /approve.`,
         container,
       );
 
-      expect(container.textContent).toContain("Pending Command Approvals");
-      expect(container.textContent).toContain("appr_structured_001");
-      expect(container.textContent).toContain("Approve");
-      expect(container.textContent).toContain("Reject");
-
-      const buttons = Array.from(container.querySelectorAll("button"));
-      buttons.find((button) => button.textContent?.includes("Approve"))?.click();
-      buttons.find((button) => button.textContent?.includes("Reject"))?.click();
-      await flushTasks();
-
-      expect(onApprove).toHaveBeenCalledWith("appr_structured_001");
-      expect(onReject).toHaveBeenCalledWith("appr_structured_001");
+      expect(container.textContent).not.toContain("Pending Command Approvals");
+      expect(onApprove).not.toHaveBeenCalled();
+      expect(onReject).not.toHaveBeenCalled();
     } finally {
       cleanupChatModuleState();
     }
@@ -1310,7 +1275,7 @@ Reply with: /approve 117ba06d allow-once|allow-always|deny`,
     }
   });
 
-  it("hides the latest top approval banner after the user approves it", async () => {
+  it("does not render the old top approval banner even when pending approvals exist", async () => {
     const container = document.createElement("div");
     cleanupChatModuleState();
     try {
@@ -1349,22 +1314,14 @@ Reply with: /approve 117ba06d allow-once|allow-always|deny`,
       };
 
       rerender();
-      expect(container.textContent).toContain("Pending Command Approvals");
-
-      const approveButton = Array.from(container.querySelectorAll("button")).find((button) =>
-        button.textContent?.includes("Approve"),
-      );
-      approveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      await flushTasks();
-
-      expect(metaclaw.onApprove).toHaveBeenCalledWith("approval-new");
       expect(container.textContent).not.toContain("Pending Command Approvals");
+      expect(metaclaw.onApprove).not.toHaveBeenCalled();
     } finally {
       cleanupChatModuleState();
     }
   });
 
-  it("shows only the latest approval request in the top banner", async () => {
+  it("does not render the old top approval banner for multiple approval-like messages", async () => {
     const onApprove = vi.fn(async () => undefined);
     const container = document.createElement("div");
     cleanupChatModuleState();
@@ -1415,17 +1372,8 @@ exec_command: rm -rf new`,
       };
 
       rerender();
-      expect(container.textContent).toContain("Pending Command Approvals");
-      expect(container.textContent).toContain("approval-new");
-      expect(container.textContent).not.toContain("approval-old");
-
-      const approveButton = Array.from(container.querySelectorAll("button")).find((button) =>
-        button.textContent?.includes("Approve"),
-      );
-      approveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      await flushTasks();
-
-      expect(onApprove).toHaveBeenCalledWith("approval-new");
+      expect(container.textContent).not.toContain("Pending Command Approvals");
+      expect(onApprove).not.toHaveBeenCalled();
     } finally {
       cleanupChatModuleState();
     }

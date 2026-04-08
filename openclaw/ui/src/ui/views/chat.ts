@@ -44,7 +44,6 @@ import { agentLogoUrl, resolveAgentAvatarUrl } from "./agents-utils.ts";
 import {
   createChatMetaclawViewState,
   renderAssistantFeedback,
-  renderMetaclawPendingApprovalsInline,
   renderMetaclawStudio,
   resetChatMetaclawViewState,
   type ChatMetaclawProps,
@@ -1251,14 +1250,6 @@ export function renderChat(props: ChatProps) {
           `
         : nothing}
       ${renderSearchBar(requestUpdate)} ${renderPinnedSection(props, pinned, requestUpdate)}
-      ${props.nativeExecApprovalActive
-        ? nothing
-        : renderMetaclawPendingApprovalsInline(
-            props.metaclaw,
-            metaclawVs,
-            requestUpdate,
-            approvalPromptCandidate,
-          )}
       ${renderMetaclawStudio(props.metaclaw, metaclawVs, requestUpdate)}
 
       <div class="chat-split-container ${sidebarOpen ? "chat-split-container--open" : ""}">
