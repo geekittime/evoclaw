@@ -79,6 +79,7 @@ import {
 } from "./controllers/exec-approvals.ts";
 import { loadLogs } from "./controllers/logs.ts";
 import {
+  addMetaclawCustomSkill,
   addMetaclawWhitelistEntry,
   compactMetaclawConversationHistory,
   loadMetaclawState,
@@ -1622,6 +1623,7 @@ export function renderApp(state: AppViewState) {
                       removeMetaclawWhitelistEntry(state, type, value),
                     onSaveSkillSelection: (skillNames) =>
                       saveMetaclawSkillSelection(state, skillNames),
+                    onAddSkill: (name, content) => addMetaclawCustomSkill(state, name, content),
                     onSubmitFeedback: async (
                       turn,
                       rating,

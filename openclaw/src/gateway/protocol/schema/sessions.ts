@@ -179,6 +179,15 @@ export const SessionsPromptContextSkillsSetParamsSchema = Type.Object(
   { additionalProperties: false },
 );
 
+export const SessionsPromptContextSkillsAddParamsSchema = Type.Object(
+  {
+    key: NonEmptyString,
+    name: NonEmptyString,
+    content: Type.String({ minLength: 1 }),
+  },
+  { additionalProperties: false },
+);
+
 export const SessionsPromptContextFeedbackParamsSchema = Type.Object(
   {
     key: NonEmptyString,

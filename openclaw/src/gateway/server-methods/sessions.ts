@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { CURRENT_SESSION_VERSION } from "@mariozechner/pi-coding-agent";
-import { resolveDefaultAgentId } from "../../agents/agent-scope.js";
+import { resolveDefaultAgentId, resolveAgentWorkspaceDir } from "../../agents/agent-scope.js";
+import { loadWorkspaceSkillEntries } from "../../agents/skills.js";
 import { normalizeSkillFilter } from "../../agents/skills/filter.js";
 import {
   abortEmbeddedPiRun,
@@ -47,6 +48,7 @@ import {
   validateSessionsPromptContextCompactParams,
   validateSessionsPromptContextFeedbackParams,
   validateSessionsPromptContextGetParams,
+  validateSessionsPromptContextSkillsAddParams,
   validateSessionsPromptContextSkillsSetParams,
   validateSessionsPreviewParams,
   validateSessionsResetParams,
@@ -58,10 +60,14 @@ import {
   summarizeFeedbackIntoImportantNote,
 } from "../session-prompt-context.js";
 import {
+  buildUpdatedPromptContextForCustomSkillAdd,
   buildUpdatedPromptContextForSkillSelection,
   buildUpdatedPromptContextForSummary,
   buildUpdatedPromptContextFromFeedback,
+  describeSessionCustomSkill,
   getSessionPromptContext,
+  resolveSelectedSessionCustomSkills,
+  resolveSessionCustomSkills,
 } from "../../sessions/prompt-context.js";
 import {
   archiveSessionTranscriptsForSession,
@@ -105,15 +111,23 @@ function buildPromptContextResponse(params: {
   availableSkills?: Array<{ name: string; description: string; category?: string }>;
 }) {
   const promptContext = getSessionPromptContext(params.entry);
+  const customSkills = resolveSessionCustomSkills(params.entry);
+  const selectedSkillNames = promptContext?.selectedSkillNames ?? [];
+  const latestInjectedSkills = Array.from(
+    new Set([
+      ...(promptContext?.selectionCustomized === true ? selectedSkillNames : []),
+      ...(params.entry?.skillsSnapshot?.resolvedSkills?.map((skill) => skill.name) ??
+        params.entry?.skillsSnapshot?.skills?.map((skill) => skill.name) ??
+        []),
+      ...resolveSelectedSessionCustomSkills(params.entry).map((skill) => skill.name),
+    ]),
+  );
   return {
     ok: true,
     key: params.key,
-    selectedSkillNames: promptContext?.selectedSkillNames ?? [],
+    selectedSkillNames,
     selectionCustomized: promptContext?.selectionCustomized === true,
-    latestInjectedSkills:
-      params.entry?.skillsSnapshot?.resolvedSkills?.map((skill) => skill.name) ??
-      params.entry?.skillsSnapshot?.skills?.map((skill) => skill.name) ??
-      [],
+    latestInjectedSkills,
     importantNotes: promptContext?.importantNotes?.trim()
       ? {
           name: "important-notes",
@@ -130,6 +144,12 @@ function buildPromptContextResponse(params: {
       : null,
     feedbackRecords: promptContext?.feedbackRecords ?? [],
     skillSelectionHistory: promptContext?.skillSelectionHistory ?? [],
+    customSkills: customSkills.map((skill) => ({
+      name: skill.name,
+      description: describeSessionCustomSkill(skill),
+      category: "session",
+      content: skill.content,
+    })),
     skills:
       params.availableSkills?.map((skill) => ({
         name: skill.name,
@@ -137,6 +157,21 @@ function buildPromptContextResponse(params: {
         category: skill.category ?? "",
       })) ?? [],
   };
+}
+
+function assertCustomSkillNameAvailable(params: {
+  sessionKey: string;
+  customSkillName: string;
+}) {
+  const cfg = loadConfig();
+  const agentId = resolveAgentIdFromSessionKey(params.sessionKey) ?? resolveDefaultAgentId(cfg);
+  const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
+  const collision = loadWorkspaceSkillEntries(workspaceDir, { config: cfg }).some(
+    (entry) => entry.skill.name.toLowerCase() === params.customSkillName.toLowerCase(),
+  );
+  if (collision) {
+    throw new Error(`A workspace skill named "${params.customSkillName}" already exists.`);
+  }
 }
 
 async function updateSessionPromptContext(params: {
@@ -1244,6 +1279,74 @@ export const sessionsHandlers: GatewayRequestHandlers = {
       emitSessionsChanged(context, {
         sessionKey: updated.key,
         reason: "prompt-context-skills",
+      });
+    } catch (error) {
+      respond(
+        false,
+        undefined,
+        errorShape(
+          ErrorCodes.UNAVAILABLE,
+          error instanceof Error ? error.message : String(error),
+        ),
+      );
+    }
+  },
+  "sessions.promptContext.skills.add": async ({ params, respond, context }) => {
+    if (
+      !assertValidParams(
+        params,
+        validateSessionsPromptContextSkillsAddParams,
+        "sessions.promptContext.skills.add",
+        respond,
+      )
+    ) {
+      return;
+    }
+    const key = requireSessionKey((params as { key?: unknown }).key, respond);
+    if (!key) {
+      return;
+    }
+    try {
+      const name = String((params as { name?: unknown }).name ?? "").trim();
+      const content = String((params as { content?: unknown }).content ?? "").trim();
+      assertCustomSkillNameAvailable({
+        sessionKey: key,
+        customSkillName: name,
+      });
+      const updated = await updateSessionPromptContext({
+        key,
+        mutate: (entry) => {
+          const withCustomSkill = buildUpdatedPromptContextForCustomSkillAdd({
+            current: entry?.promptContext,
+            name,
+            content,
+          });
+          const selectedSkillNames = normalizeSkillFilter([
+            ...(withCustomSkill.selectedSkillNames ?? []),
+            name,
+          ]) ?? [name];
+          return {
+            ...(entry ?? {
+              sessionId: randomUUID(),
+              updatedAt: Date.now(),
+            }),
+            updatedAt: Date.now(),
+            promptContext: buildUpdatedPromptContextForSkillSelection({
+              current: withCustomSkill,
+              selectedSkillNames,
+              customized: true,
+            }),
+          };
+        },
+      });
+      respond(
+        true,
+        buildPromptContextResponse({ key: updated.key, entry: updated.entry }),
+        undefined,
+      );
+      emitSessionsChanged(context, {
+        sessionKey: updated.key,
+        reason: "prompt-context-skill-added",
       });
     } catch (error) {
       respond(

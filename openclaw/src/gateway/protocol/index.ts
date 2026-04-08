@@ -216,6 +216,8 @@ import {
   SessionsPromptContextFeedbackParamsSchema,
   type SessionsPromptContextGetParams,
   SessionsPromptContextGetParamsSchema,
+  type SessionsPromptContextSkillsAddParams,
+  SessionsPromptContextSkillsAddParamsSchema,
   type SessionsPromptContextSkillsSetParams,
   SessionsPromptContextSkillsSetParamsSchema,
   type SessionsPreviewParams,
@@ -379,6 +381,8 @@ export const validateSessionsPromptContextGetParams = ajv.compile<SessionsPrompt
 );
 export const validateSessionsPromptContextSkillsSetParams =
   ajv.compile<SessionsPromptContextSkillsSetParams>(SessionsPromptContextSkillsSetParamsSchema);
+export const validateSessionsPromptContextSkillsAddParams =
+  ajv.compile<SessionsPromptContextSkillsAddParams>(SessionsPromptContextSkillsAddParamsSchema);
 export const validateSessionsPromptContextFeedbackParams =
   ajv.compile<SessionsPromptContextFeedbackParams>(SessionsPromptContextFeedbackParamsSchema);
 export const validateSessionsPromptContextCompactParams =

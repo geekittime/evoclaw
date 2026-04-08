@@ -72,6 +72,7 @@ const BASE_METHODS = [
   "sessions.delete",
   "sessions.compact",
   "sessions.promptContext.get",
+  "sessions.promptContext.skills.add",
   "sessions.promptContext.skills.set",
   "sessions.promptContext.feedback",
   "sessions.promptContext.compact",

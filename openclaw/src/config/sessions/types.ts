@@ -88,6 +88,13 @@ export type SessionSkillSelectionRecord = {
   selectedSkillNames: string[];
 };
 
+export type SessionCustomSkillRecord = {
+  name: string;
+  content: string;
+  createdAt: number;
+  updatedAt: number;
+};
+
 export type SessionPromptContext = {
   selectedSkillNames?: string[];
   selectionCustomized?: boolean;
@@ -99,6 +106,7 @@ export type SessionPromptContext = {
   contextSummaryTokenCount?: number;
   feedbackRecords?: SessionFeedbackRecord[];
   skillSelectionHistory?: SessionSkillSelectionRecord[];
+  customSkills?: SessionCustomSkillRecord[];
 };
 
 export type SessionEntry = {

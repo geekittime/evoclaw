@@ -17,6 +17,7 @@ export type MetaclawSkillEntry = {
   name: string;
   description: string;
   category: string;
+  content?: string;
 };
 
 export type MetaclawImportantNotes = {
@@ -126,6 +127,7 @@ type SessionsPromptContextGetResult = {
   contextSummary?: MetaclawContextSummary | null;
   feedbackRecords?: unknown[];
   skillSelectionHistory?: unknown[];
+  customSkills?: MetaclawSkillEntry[];
 };
 
 type SessionsPromptContextFeedbackResult = {
@@ -403,6 +405,28 @@ function updateSkillsState(state: MetaclawState, payload: MetaclawSkillsPayload)
   state.metaclawContextSummary = payload.context_summary ?? null;
 }
 
+function mergeVisibleSkills(
+  workspaceSkills: MetaclawSkillEntry[],
+  customSkills: MetaclawSkillEntry[],
+): MetaclawSkillEntry[] {
+  const merged = new Map<string, MetaclawSkillEntry>();
+  for (const skill of [...workspaceSkills, ...customSkills]) {
+    const name = String(skill.name ?? "").trim();
+    if (!name) {
+      continue;
+    }
+    merged.set(name.toLowerCase(), {
+      name,
+      description: String(skill.description ?? "").trim(),
+      category: String(skill.category ?? "").trim() || "workspace",
+      ...(typeof skill.content === "string" && skill.content.trim()
+        ? { content: skill.content.trim() }
+        : {}),
+    });
+  }
+  return [...merged.values()].sort((left, right) => left.name.localeCompare(right.name));
+}
+
 function retainLatestPendingApproval(
   pending: MetaclawPendingApproval[],
 ): MetaclawPendingApproval[] {
@@ -595,16 +619,26 @@ export async function loadMetaclawState(state: MetaclawState) {
     ]);
 
     if (skillsStatusResult.status === "fulfilled" && promptContextResult.status === "fulfilled") {
-      const skillEntries = Array.isArray(skillsStatusResult.value.skills)
+      const workspaceSkillEntries = Array.isArray(skillsStatusResult.value.skills)
         ? skillsStatusResult.value.skills
             .map((skill) => ({
               name: skill.name,
               description: skill.description,
               category: skill.source ?? "workspace",
             }))
-            .sort((left, right) => left.name.localeCompare(right.name))
         : [];
-      state.metaclawSkills = skillEntries;
+      const customSkillEntries = Array.isArray(promptContextResult.value.customSkills)
+        ? promptContextResult.value.customSkills
+            .map((skill) => ({
+              name: skill.name,
+              description: skill.description,
+              category: skill.category || "session",
+              ...(typeof skill.content === "string" && skill.content.trim()
+                ? { content: skill.content.trim() }
+                : {}),
+            }))
+        : [];
+      state.metaclawSkills = mergeVisibleSkills(workspaceSkillEntries, customSkillEntries);
       state.metaclawSelectedSkillNames = Array.isArray(promptContextResult.value.selectedSkillNames)
         ? promptContextResult.value.selectedSkillNames
         : [];
@@ -666,6 +700,31 @@ export async function saveMetaclawSkillSelection(
       key: state.sessionKey,
       selectedSkillNames: Array.isArray(skillNames) ? skillNames : [],
       selectionCustomized: true,
+    });
+    await loadMetaclawState(state);
+  } catch (error) {
+    state.metaclawError = error instanceof Error ? error.message : String(error);
+    throw error;
+  } finally {
+    state.metaclawSaving = false;
+  }
+}
+
+export async function addMetaclawCustomSkill(
+  state: MetaclawState,
+  name: string,
+  content: string,
+) {
+  if (!state.client || !state.connected) {
+    throw new Error("OpenClaw gateway is not connected.");
+  }
+  state.metaclawSaving = true;
+  state.metaclawError = null;
+  try {
+    await state.client.request("sessions.promptContext.skills.add", {
+      key: state.sessionKey,
+      name,
+      content,
     });
     await loadMetaclawState(state);
   } catch (error) {

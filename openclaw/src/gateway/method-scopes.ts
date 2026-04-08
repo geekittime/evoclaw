@@ -138,6 +138,7 @@ const METHOD_SCOPE_GROUPS: Record<OperatorScope, readonly string[]> = {
     "sessions.reset",
     "sessions.delete",
     "sessions.compact",
+    "sessions.promptContext.skills.add",
     "sessions.promptContext.skills.set",
     "sessions.promptContext.feedback",
     "sessions.promptContext.compact",
