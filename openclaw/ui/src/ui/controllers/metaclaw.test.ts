@@ -195,6 +195,27 @@ describe("metaclaw controller in native OpenClaw mode", () => {
     expect(state.metaclawPendingApprovals[0]?.approval_id).toBe("appr-new");
   });
 
+  it("treats legacy main-session approval aliases as the current session", async () => {
+    const state = createState({}, async (method) => {
+      switch (method) {
+        case "skills.status":
+          return { skills: [] };
+        case "sessions.promptContext.get":
+          return { ok: true, key: "agent:main:main" };
+        case "exec.approvals.get":
+          return createExecSnapshot();
+        default:
+          throw new Error(`Unexpected request: ${method}`);
+      }
+    });
+    state.execApprovalQueue = [createExecApproval("appr-main-alias", "rm -rf /tmp/new", 2_000, "main")];
+
+    await loadMetaclawState(state);
+
+    expect(state.metaclawPendingApprovals).toHaveLength(1);
+    expect(state.metaclawPendingApprovals[0]?.approval_id).toBe("appr-main-alias");
+  });
+
   it("persists user-selected skills through the prompt-context RPC", async () => {
     const state = createState({}, async (method, params) => {
       switch (method) {
@@ -275,6 +296,10 @@ describe("metaclaw controller in native OpenClaw mode", () => {
           expect(params).toMatchObject({
             key: "agent:main:main",
             source: "manual",
+            messages: [
+              { role: "user", content: "Please summarize this discussion." },
+              { role: "assistant", content: "Here is the latest result." },
+            ],
           });
           return {
             ok: true,

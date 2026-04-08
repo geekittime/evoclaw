@@ -1,8 +1,18 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const callGatewayMock = vi.fn();
+const handleGatewayRequestMock = vi.fn();
 const configState = vi.hoisted(() => ({
   value: {} as Record<string, unknown>,
+}));
+const gatewayScopeState = vi.hoisted(() => ({
+  scope: undefined as
+    | {
+        context: Record<string, unknown>;
+        client: Record<string, unknown>;
+        isWebchatConnect: (params: unknown) => boolean;
+      }
+    | undefined,
 }));
 vi.mock("../../config/config.js", () => ({
   loadConfig: () => configState.value,
@@ -10,6 +20,12 @@ vi.mock("../../config/config.js", () => ({
 }));
 vi.mock("../../gateway/call.js", () => ({
   callGateway: (...args: unknown[]) => callGatewayMock(...args),
+}));
+vi.mock("../../plugins/runtime/gateway-request-scope.js", () => ({
+  getPluginRuntimeGatewayRequestScope: () => gatewayScopeState.scope,
+}));
+vi.mock("../../gateway/server-methods.js", () => ({
+  handleGatewayRequest: (...args: unknown[]) => handleGatewayRequestMock(...args),
 }));
 
 let callGatewayTool: typeof import("./gateway.js").callGatewayTool;
@@ -26,7 +42,9 @@ describe("gateway tool defaults", () => {
 
   beforeEach(() => {
     callGatewayMock.mockClear();
+    handleGatewayRequestMock.mockClear();
     configState.value = {};
+    gatewayScopeState.scope = undefined;
     delete process.env.OPENCLAW_GATEWAY_TOKEN;
   });
 
@@ -199,5 +217,43 @@ describe("gateway tool defaults", () => {
     await expect(
       callGatewayTool("health", { gatewayUrl: "ws://169.254.169.254", gatewayToken: "t" }, {}),
     ).rejects.toThrow(/gatewayUrl override rejected/i);
+  });
+
+  it("dispatches directly through the current gateway request scope when available", async () => {
+    gatewayScopeState.scope = {
+      context: { marker: "gateway-context" },
+      client: { connect: { role: "operator", scopes: ["operator.admin"] } },
+      isWebchatConnect: () => false,
+    };
+    handleGatewayRequestMock.mockImplementationOnce(async (opts) => {
+      (opts as { respond: (ok: boolean, payload?: unknown) => void }).respond(true, {
+        ok: true,
+        source: "direct-dispatch",
+      });
+    });
+
+    const result = await callGatewayTool("exec.approval.request", {}, { id: "approval-1" });
+
+    expect(result).toEqual({ ok: true, source: "direct-dispatch" });
+    expect(handleGatewayRequestMock).toHaveBeenCalledTimes(1);
+    expect(callGatewayMock).not.toHaveBeenCalled();
+  });
+
+  it("still uses websocket gateway calls when an explicit gatewayUrl override is provided", async () => {
+    gatewayScopeState.scope = {
+      context: { marker: "gateway-context" },
+      client: { connect: { role: "operator", scopes: ["operator.admin"] } },
+      isWebchatConnect: () => false,
+    };
+    callGatewayMock.mockResolvedValueOnce({ ok: true });
+
+    await callGatewayTool(
+      "health",
+      { gatewayUrl: "ws://127.0.0.1:18789", gatewayToken: "t" },
+      {},
+    );
+
+    expect(callGatewayMock).toHaveBeenCalledTimes(1);
+    expect(handleGatewayRequestMock).not.toHaveBeenCalled();
   });
 });

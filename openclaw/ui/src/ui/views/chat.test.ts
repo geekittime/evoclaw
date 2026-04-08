@@ -927,6 +927,46 @@ describe("chat view", () => {
     expect(onCompactHistory).toHaveBeenCalledTimes(1);
   });
 
+  it("opens Session Studio when the top-level Compress button is clicked", async () => {
+    const container = document.createElement("div");
+    const onCompactHistory = vi.fn(async () => undefined);
+    cleanupChatModuleState();
+    try {
+      const props = createProps({
+        messages: [{ role: "assistant", content: "Done.", timestamp: 1000 }],
+        metaclaw: createMetaclawProps(),
+        onCompactHistory,
+      });
+
+      const rerender = () => {
+        render(
+          renderChat({
+            ...props,
+            onRequestUpdate: rerender,
+          }),
+          container,
+        );
+      };
+
+      rerender();
+
+      expect(container.textContent).toContain("Show Session Studio");
+      expect(container.textContent).not.toContain("Compressed History");
+
+      const compressButton = Array.from(container.querySelectorAll("button")).find((button) =>
+        button.textContent?.includes("Compress"),
+      );
+      compressButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flushTasks();
+
+      expect(onCompactHistory).toHaveBeenCalledTimes(1);
+      expect(container.textContent).toContain("Hide Session Studio");
+      expect(container.textContent).toContain("Compressed History");
+    } finally {
+      cleanupChatModuleState();
+    }
+  });
+
   it("renders answer-level MetaClaw feedback buttons next to assistant turns", () => {
     const container = document.createElement("div");
     render(
@@ -1009,6 +1049,131 @@ exec_command: pwd`,
     }
   });
 
+  it("renders top approval buttons from native OpenClaw /approve prompts when the queue is not yet available", async () => {
+    const onApprove = vi.fn();
+    const onReject = vi.fn();
+    const container = document.createElement("div");
+    cleanupChatModuleState();
+    try {
+      render(
+        renderChat(
+          createProps({
+            metaclaw: createMetaclawProps({
+              pendingApprovals: [],
+              onApprove,
+              onReject,
+            }),
+            messages: [
+              {
+                role: "assistant",
+                content: `Approval required (id 117ba06d, full appr_af1056110cf3).
+Host: gateway
+CWD: /home/kangshijia/wangbinyu/temp/evoclaw
+Command:
+\`\`\`sh
+rm -f /home/kangshijia/wangbinyu/temp/evoclaw/temp0/*.py
+\`\`\`
+Mode: foreground (interactive approvals available).
+Reply with: /approve 117ba06d allow-once|allow-always|deny
+If the short code is ambiguous, use the full id in /approve.`,
+                timestamp: 1000,
+              },
+            ],
+          }),
+        ),
+        container,
+      );
+
+      expect(container.textContent).toContain("Pending Command Approvals");
+      expect(container.textContent).toContain("appr_af1056110cf3");
+      expect(container.textContent).toContain("Approve");
+      expect(container.textContent).toContain("Reject");
+      expect(container.textContent).not.toContain("Reply with: /approve 117ba06d");
+
+      const buttons = Array.from(container.querySelectorAll("button"));
+      buttons.find((button) => button.textContent?.includes("Approve"))?.click();
+      buttons.find((button) => button.textContent?.includes("Reject"))?.click();
+      await flushTasks();
+
+      expect(onApprove).toHaveBeenCalledWith("appr_af1056110cf3");
+      expect(onReject).toHaveBeenCalledWith("appr_af1056110cf3");
+    } finally {
+      cleanupChatModuleState();
+    }
+  });
+
+  it("renders top approval buttons from tool-result approval prompts even when the assistant only paraphrases the confirmation", async () => {
+    const onApprove = vi.fn();
+    const onReject = vi.fn();
+    const container = document.createElement("div");
+    cleanupChatModuleState();
+    try {
+      render(
+        renderChat(
+          createProps({
+            metaclaw: createMetaclawProps({
+              pendingApprovals: [],
+              onApprove,
+              onReject,
+            }),
+            toolMessages: [
+              {
+                role: "assistant",
+                toolCallId: "tool-exec-approval",
+                content: [
+                  {
+                    type: "toolcall",
+                    name: "exec",
+                    arguments: {},
+                  },
+                  {
+                    type: "toolresult",
+                    name: "exec",
+                    text: `Approval required (id 117ba06d, full appr_af1056110cf3).
+Host: gateway
+CWD: /home/kangshijia/wangbinyu/temp/evoclaw
+Command:
+\`\`\`sh
+rm -rf /home/kangshijia/wangbinyu/temp/evoclaw/temp0/*
+\`\`\`
+Mode: foreground (interactive approvals available).
+Reply with: /approve 117ba06d allow-once|allow-always|deny
+If the short code is ambiguous, use the full id in /approve.`,
+                  },
+                ],
+                timestamp: 1000,
+              },
+            ],
+            messages: [
+              {
+                role: "assistant",
+                content:
+                  "需要你批准删除操作。\n删除命令：rm -rf /home/kangshijia/wangbinyu/temp/evoclaw/temp0/*",
+                timestamp: 1001,
+              },
+            ],
+          }),
+        ),
+        container,
+      );
+
+      expect(container.textContent).toContain("Pending Command Approvals");
+      expect(container.textContent).toContain("appr_af1056110cf3");
+      expect(container.textContent).toContain("Approve");
+      expect(container.textContent).toContain("Reject");
+
+      const buttons = Array.from(container.querySelectorAll("button"));
+      buttons.find((button) => button.textContent?.includes("Approve"))?.click();
+      buttons.find((button) => button.textContent?.includes("Reject"))?.click();
+      await flushTasks();
+
+      expect(onApprove).toHaveBeenCalledWith("appr_af1056110cf3");
+      expect(onReject).toHaveBeenCalledWith("appr_af1056110cf3");
+    } finally {
+      cleanupChatModuleState();
+    }
+  });
+
   it("does not render approval transcript text when the assistant only reports a pending approval", () => {
     const container = document.createElement("div");
     cleanupChatModuleState();
@@ -1036,6 +1201,41 @@ exec (low): require_approval | read-only shell command`,
       expect(container.textContent).not.toContain("这个工具在调用前需要获得你的允许");
       expect(container.textContent).not.toContain("Approval ID: approval-only");
       expect(container.textContent).not.toContain("require_approval");
+    } finally {
+      cleanupChatModuleState();
+    }
+  });
+
+  it("does not render native OpenClaw approval transcript text in chat history", () => {
+    const container = document.createElement("div");
+    cleanupChatModuleState();
+    try {
+      render(
+        renderChat(
+          createProps({
+            metaclaw: createMetaclawProps(),
+            messages: [
+              {
+                role: "assistant",
+                content: `Approval required (id 117ba06d, full appr_af1056110cf3).
+Host: gateway
+CWD: /home/kangshijia/wangbinyu/temp/evoclaw
+Command:
+\`\`\`sh
+rm -f /home/kangshijia/wangbinyu/temp/evoclaw/temp0/*.py
+\`\`\`
+Mode: foreground (interactive approvals available).
+Reply with: /approve 117ba06d allow-once|allow-always|deny`,
+                timestamp: 1000,
+              },
+            ],
+          }),
+        ),
+        container,
+      );
+
+      expect(container.textContent).not.toContain("Approval required (id 117ba06d");
+      expect(container.textContent).not.toContain("Reply with: /approve 117ba06d");
     } finally {
       cleanupChatModuleState();
     }

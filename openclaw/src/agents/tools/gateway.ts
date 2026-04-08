@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { loadConfig, resolveGatewayPort } from "../../config/config.js";
 import { callGateway } from "../../gateway/call.js";
 import { resolveGatewayCredentialsFromConfig, trimToUndefined } from "../../gateway/credentials.js";
@@ -5,6 +6,7 @@ import {
   resolveLeastPrivilegeOperatorScopesForMethod,
   type OperatorScope,
 } from "../../gateway/method-scopes.js";
+import { getPluginRuntimeGatewayRequestScope } from "../../plugins/runtime/gateway-request-scope.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../../utils/message-channel.js";
 import { readStringParam } from "./common.js";
 
@@ -146,6 +148,42 @@ export async function callGatewayTool<T = Record<string, unknown>>(
   params?: unknown,
   extra?: { expectFinal?: boolean; scopes?: OperatorScope[] },
 ) {
+  const scope = getPluginRuntimeGatewayRequestScope();
+  const urlOverride = trimToUndefined(opts?.gatewayUrl);
+  if (scope?.context && scope.client && !urlOverride) {
+    const { handleGatewayRequest } = await import("../../gateway/server-methods.js");
+    let result:
+      | {
+          ok: boolean;
+          payload?: unknown;
+          error?: { message?: string };
+        }
+      | undefined;
+    await handleGatewayRequest({
+      req: {
+        type: "req",
+        id: `agent-tool-${randomUUID()}`,
+        method,
+        params: (params ?? {}) as Record<string, unknown>,
+      },
+      client: scope.client,
+      isWebchatConnect: scope.isWebchatConnect,
+      respond: (ok, payload, error) => {
+        if (!result) {
+          result = { ok, payload, error };
+        }
+      },
+      context: scope.context,
+    });
+    if (!result) {
+      throw new Error(`Gateway method "${method}" completed without a response.`);
+    }
+    if (!result.ok) {
+      throw new Error(result.error?.message ?? `Gateway method "${method}" failed.`);
+    }
+    return result.payload as T;
+  }
+
   const gateway = resolveGatewayOptions(opts);
   const scopes = Array.isArray(extra?.scopes)
     ? extra.scopes

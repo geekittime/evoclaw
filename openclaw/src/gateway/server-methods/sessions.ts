@@ -58,6 +58,12 @@ import {
   summarizeFeedbackIntoImportantNote,
 } from "../session-prompt-context.js";
 import {
+  buildUpdatedPromptContextForSkillSelection,
+  buildUpdatedPromptContextForSummary,
+  buildUpdatedPromptContextFromFeedback,
+  getSessionPromptContext,
+} from "../../sessions/prompt-context.js";
+import {
   archiveSessionTranscriptsForSession,
   cleanupSessionBeforeMutation,
   emitSessionUnboundLifecycleEvent,
@@ -65,10 +71,6 @@ import {
 } from "../session-reset-service.js";
 import { reactivateCompletedSubagentSession } from "../session-subagent-reactivation.js";
 import {
-  buildUpdatedPromptContextForSkillSelection,
-  buildUpdatedPromptContextForSummary,
-  buildUpdatedPromptContextFromFeedback,
-  getSessionPromptContext,
   archiveFileOnDisk,
   listSessionsFromStore,
   loadCombinedSessionStoreForGateway,
@@ -1371,7 +1373,11 @@ export const sessionsHandlers: GatewayRequestHandlers = {
         );
         return;
       }
-      const messages = readSessionMessages(entry.sessionId, storePath, entry.sessionFile);
+      const providedMessages = Array.isArray((params as { messages?: unknown[] }).messages)
+        ? (params as { messages: unknown[] }).messages
+        : [];
+      const transcriptMessages = readSessionMessages(entry.sessionId, storePath, entry.sessionFile);
+      const messages = providedMessages.length > 0 ? providedMessages : transcriptMessages;
       const summary = await summarizeConversationHistory({
         messages,
         instructions:

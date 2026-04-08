@@ -183,6 +183,9 @@ describe("buildAgentSystemPrompt", () => {
     expect(prompt).toContain(
       "Only include the concrete /approve command if the tool result says chat approvals are unavailable or only manual approval is possible.",
     );
+    expect(prompt).toContain(
+      "If the user has already explicitly requested a destructive or restricted command, do not ask a duplicate natural-language confirmation question first; call exec directly and let the native approval UI collect the decision.",
+    );
     expect(prompt).not.toContain(
       "When exec returns approval-pending, include the concrete /approve command from tool output",
     );
@@ -199,6 +202,9 @@ describe("buildAgentSystemPrompt", () => {
     );
     expect(prompt).toContain(
       "Only include the concrete /approve command if the tool result says chat approvals are unavailable or only manual approval is possible.",
+    );
+    expect(prompt).toContain(
+      "If the user has already explicitly requested a destructive or restricted command, do not ask a duplicate natural-language confirmation question first; call exec directly and let the native approval UI collect the decision.",
     );
     expect(prompt).not.toContain(
       "When exec returns approval-pending, include the concrete /approve command from tool output",

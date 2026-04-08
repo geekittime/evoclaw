@@ -82,6 +82,7 @@ import {
   addMetaclawWhitelistEntry,
   compactMetaclawConversationHistory,
   loadMetaclawState,
+  mapExecApprovalQueueForSession,
   removeMetaclawWhitelistEntry,
   resolveMetaclawApproval,
   saveMetaclawSandboxPolicy,
@@ -1546,8 +1547,16 @@ export function renderApp(state: AppViewState) {
               assistantName: state.assistantName,
               assistantAvatar: state.assistantAvatar,
               basePath: state.basePath ?? "",
+              nativeExecApprovalActive: state.execApprovalQueue.length > 0,
               metaclaw: state.metaclawEnabled
                 ? {
+                    pendingApprovals: (() => {
+                      const immediate = mapExecApprovalQueueForSession(
+                        state.execApprovalQueue,
+                        state.sessionKey,
+                      );
+                      return immediate.length > 0 ? immediate : state.metaclawPendingApprovals;
+                    })(),
                     apiBase: state.metaclawApiBase,
                     token: state.metaclawToken,
                     loading: state.metaclawLoading,
@@ -1555,7 +1564,6 @@ export function renderApp(state: AppViewState) {
                     compactingHistory: state.metaclawCompactingHistory,
                     connected: state.metaclawConnected,
                     error: state.metaclawError,
-                    pendingApprovals: state.metaclawPendingApprovals,
                     sandboxPolicy: state.metaclawSandboxPolicy,
                     skills: state.metaclawSkills,
                     selectedSkillNames: state.metaclawSelectedSkillNames,
@@ -2093,7 +2101,7 @@ export function renderApp(state: AppViewState) {
             )
           : nothing}
       </main>
-      ${state.metaclawEnabled ? nothing : renderExecApprovalPrompt(state)}
+      ${renderExecApprovalPrompt(state)}
       ${renderGatewayUrlConfirmation(state)}
       ${nothing}
     </div>

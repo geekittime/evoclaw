@@ -700,6 +700,35 @@ exec (low): require_approval | read-only shell command`,
 
     expect(state.chatMessages).toEqual([messages[1]]);
   });
+
+  it("filters native OpenClaw /approve approval prompts from history", async () => {
+    const messages = [
+      {
+        role: "assistant",
+        content: `Approval required (id 117ba06d, full appr_af1056110cf3).
+Host: gateway
+CWD: /workspace
+Command:
+\`\`\`sh
+rm -f /workspace/temp0/*.py
+\`\`\`
+Mode: foreground (interactive approvals available).
+Reply with: /approve 117ba06d allow-once|allow-always|deny`,
+      },
+      { role: "assistant", content: [{ type: "text", text: "Approved and continuing." }] },
+    ];
+    const mockClient = {
+      request: vi.fn().mockResolvedValue({ messages }),
+    };
+    const state = createState({
+      client: mockClient as unknown as ChatState["client"],
+      connected: true,
+    });
+
+    await loadChatHistory(state);
+
+    expect(state.chatMessages).toEqual([messages[1]]);
+  });
 });
 
 describe("sendChatMessage", () => {
@@ -779,6 +808,34 @@ describe("handleChatEvent", () => {
         content: `这个工具在调用前需要获得你的允许。
 Approval ID: appr_505b16cb41c5
 使用 approve 进行批准，或使用 reject 进行拒绝。`,
+      },
+    });
+
+    expect(result).toBe("final");
+    expect(state.chatMessages).toEqual([]);
+  });
+
+  it("does not append native OpenClaw /approve prompts to visible chat history", () => {
+    const state = createState({
+      chatRunId: "run-1",
+      connected: true,
+    });
+
+    const result = handleChatEvent(state, {
+      runId: "run-1",
+      sessionKey: "main",
+      state: "final",
+      message: {
+        role: "assistant",
+        content: `Approval required (id 117ba06d, full appr_af1056110cf3).
+Host: gateway
+CWD: /workspace
+Command:
+\`\`\`sh
+rm -f /workspace/temp0/*.py
+\`\`\`
+Mode: foreground (interactive approvals available).
+Reply with: /approve 117ba06d allow-once|allow-always|deny`,
       },
     });
 

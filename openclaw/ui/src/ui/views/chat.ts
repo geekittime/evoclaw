@@ -17,7 +17,10 @@ import {
   renderStreamingGroup,
 } from "../chat/grouped-render.ts";
 import { InputHistory } from "../chat/input-history.ts";
-import { isAssistantMetaclawApprovalPromptMessage } from "../chat/metaclaw-approval.ts";
+import {
+  isAssistantMetaclawApprovalPromptMessage,
+  parseAssistantApprovalPromptMessage,
+} from "../chat/metaclaw-approval.ts";
 import { extractText } from "../chat/message-extract.ts";
 import { normalizeMessage, normalizeRoleForGrouping } from "../chat/message-normalizer.ts";
 import { PinnedMessages } from "../chat/pinned-messages.ts";
@@ -109,6 +112,7 @@ export type ChatProps = {
   onSplitRatioChange?: (ratio: number) => void;
   onChatScroll?: (event: Event) => void;
   basePath?: string;
+  nativeExecApprovalActive?: boolean;
   metaclaw?: ChatMetaclawProps;
 };
 
@@ -960,6 +964,17 @@ export function renderChat(props: ChatProps) {
 
   const requestUpdate = props.onRequestUpdate ?? (() => {});
   const getDraft = props.getDraft ?? (() => props.draft);
+  const approvalPromptCandidate = findLatestApprovalPromptCandidate(props);
+  const handleCompactHistoryClick = async () => {
+    if (!props.onCompactHistory) {
+      return;
+    }
+    if (props.metaclaw) {
+      metaclawVs.studioExpanded = true;
+      requestUpdate();
+    }
+    await props.onCompactHistory();
+  };
 
   const splitRatio = props.splitRatio ?? 0.6;
   const sidebarOpen = Boolean(props.sidebarOpen && props.onCloseSidebar);
@@ -1236,7 +1251,14 @@ export function renderChat(props: ChatProps) {
           `
         : nothing}
       ${renderSearchBar(requestUpdate)} ${renderPinnedSection(props, pinned, requestUpdate)}
-      ${renderMetaclawPendingApprovalsInline(props.metaclaw, metaclawVs)}
+      ${props.nativeExecApprovalActive
+        ? nothing
+        : renderMetaclawPendingApprovalsInline(
+            props.metaclaw,
+            metaclawVs,
+            requestUpdate,
+            approvalPromptCandidate,
+          )}
       ${renderMetaclawStudio(props.metaclaw, metaclawVs, requestUpdate)}
 
       <div class="chat-split-container ${sidebarOpen ? "chat-split-container--open" : ""}">
@@ -1412,7 +1434,7 @@ export function renderChat(props: ChatProps) {
               ? html`
                   <button
                     class="btn btn--ghost agent-chat__toolbar-action"
-                    @click=${props.onCompactHistory}
+                    @click=${() => void handleCompactHistoryClick()}
                     title="Compress conversation history"
                     aria-label="Compress conversation history"
                     ?disabled=${!canCompactHistory}
@@ -1618,6 +1640,20 @@ function buildChatItems(props: ChatProps): Array<ChatItem | MessageGroup> {
   }
 
   return groupMessages(items);
+}
+
+function findLatestApprovalPromptCandidate(props: ChatProps) {
+  const sources = [
+    ...(Array.isArray(props.toolMessages) ? props.toolMessages : []),
+    ...(Array.isArray(props.messages) ? props.messages : []),
+  ];
+  for (let index = sources.length - 1; index >= 0; index -= 1) {
+    const candidate = parseAssistantApprovalPromptMessage(sources[index]);
+    if (candidate) {
+      return candidate;
+    }
+  }
+  return null;
 }
 
 function messageKey(message: unknown, index: number): string {

@@ -1,4 +1,8 @@
 import { html, nothing, type TemplateResult } from "lit";
+import {
+  parseAssistantApprovalPromptText,
+  type AssistantApprovalPromptCandidate,
+} from "../chat/metaclaw-approval.ts";
 import { extractText } from "../chat/message-extract.ts";
 import { normalizeRoleForGrouping } from "../chat/message-normalizer.ts";
 import type {
@@ -113,16 +117,6 @@ export function createChatMetaclawViewState(): ChatMetaclawViewState {
   };
 }
 
-export type MetaclawApprovalPromptCandidate = {
-  approvalId: string;
-  rawText: string;
-  detailText: string | null;
-};
-
-const METACLAW_APPROVAL_ID_RE = /Approval ID:\s*([A-Za-z0-9._:-]+)/i;
-const METACLAW_APPROVAL_IGNORE_LINE_RE =
-  /^(approval id:|这个工具在调用前需要获得你的允许|使用 approve\b|使用 reject\b|如果有多个待处理的批准|if there are multiple pending approvals|this tool requires your approval|use approve\b|use reject\b)/i;
-
 export function resetChatMetaclawViewState(state: ChatMetaclawViewState) {
   Object.assign(state, createChatMetaclawViewState());
 }
@@ -216,37 +210,7 @@ function extractAssistantResponseText(group: MessageGroup): string {
   return parts.join("\n\n").trim();
 }
 
-export function parseMetaclawApprovalPromptCandidate(
-  text: string,
-): MetaclawApprovalPromptCandidate | null {
-  const normalized = text.trim();
-  if (!normalized) {
-    return null;
-  }
-
-  const approvalMatches = [...normalized.matchAll(new RegExp(METACLAW_APPROVAL_ID_RE.source, "gi"))];
-  const approvalMatch = approvalMatches.at(-1);
-  if (!approvalMatch || approvalMatch.index == null) {
-    return null;
-  }
-
-  const approvalText = normalized.slice(approvalMatch.index).trim();
-
-  const lines = approvalText
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  const detailText =
-    [...lines]
-      .reverse()
-      .find((line) => !METACLAW_APPROVAL_IGNORE_LINE_RE.test(line)) ?? null;
-
-  return {
-    approvalId: approvalMatch[1],
-    rawText: approvalText,
-    detailText,
-  };
-}
+export const parseMetaclawApprovalPromptCandidate = parseAssistantApprovalPromptText;
 
 function renderConnectionPanel(props: ChatMetaclawProps): TemplateResult {
   const degradedCount = Object.values(props.sections).filter(
@@ -393,18 +357,92 @@ function renderPendingApprovalsPanel(props: ChatMetaclawProps): TemplateResult {
 export function renderMetaclawPendingApprovalsInline(
   props: ChatMetaclawProps | undefined,
   viewState: ChatMetaclawViewState,
+  requestUpdate: () => void,
+  fallbackPrompt: AssistantApprovalPromptCandidate | null = null,
 ): TemplateResult | typeof nothing {
   const visiblePendingApprovals = props?.pendingApprovals.filter(
     (item) => !viewState.dismissedApprovalIds.includes(item.approval_id),
   );
+  const fallbackApprovalId = fallbackPrompt?.approvalId ?? null;
+  const fallbackVisible =
+    !!fallbackApprovalId && !viewState.dismissedApprovalIds.includes(fallbackApprovalId);
   if (
     !props ||
     viewState.studioExpanded ||
-    props.sections.pendingApprovals.status !== "ready" ||
-    !visiblePendingApprovals ||
-    visiblePendingApprovals.length === 0
+    ((!visiblePendingApprovals || visiblePendingApprovals.length === 0) && !fallbackVisible) ||
+    (props.sections.pendingApprovals.status !== "ready" &&
+      (!visiblePendingApprovals || visiblePendingApprovals.length === 0) &&
+      !fallbackVisible)
   ) {
     return nothing;
+  }
+
+  const renderApprovalActions = (approvalId: string) => html`
+    <div class="metaclaw-approval__actions">
+      <button
+        class="btn primary"
+        type="button"
+        ?disabled=${props.saving}
+        @click=${async () => {
+          try {
+            await props.onApprove(approvalId);
+            viewState.dismissedApprovalIds = appendUnique(viewState.dismissedApprovalIds, approvalId);
+          } catch {
+            requestUpdate();
+          }
+        }}
+      >
+        Approve
+      </button>
+      <button
+        class="btn danger"
+        type="button"
+        ?disabled=${props.saving}
+        @click=${async () => {
+          try {
+            await props.onReject(approvalId);
+            viewState.dismissedApprovalIds = appendUnique(viewState.dismissedApprovalIds, approvalId);
+          } catch {
+            requestUpdate();
+          }
+        }}
+      >
+        Reject
+      </button>
+    </div>
+  `;
+
+  if ((!visiblePendingApprovals || visiblePendingApprovals.length === 0) && fallbackPrompt && fallbackVisible) {
+    return html`
+      <section class="metaclaw-inline-approvals">
+        <div class="metaclaw-inline-approvals__head">
+          <div>
+            <div class="metaclaw-panel__title">Pending Command Approvals</div>
+            <div class="metaclaw-panel__sub">
+              The agent requested a restricted command. Approve or reject it here without opening
+              the session studio.
+            </div>
+          </div>
+          <span class="metaclaw-status-pill metaclaw-status-pill--warn">1 waiting</span>
+        </div>
+        <div class="metaclaw-approval-list">
+          <article class="metaclaw-approval">
+            <div class="metaclaw-approval__head">
+              <div class="mono">${fallbackPrompt.approvalId}</div>
+            </div>
+            <div class="metaclaw-approval__body">
+              <div class="metaclaw-approval__decision">
+                <strong>exec</strong>
+                <span class="mono"
+                  >${fallbackPrompt.detailText ?? "OpenClaw reported a pending approval."}</span
+                >
+              </div>
+            </div>
+            ${renderApprovalActions(fallbackPrompt.approvalId)}
+          </article>
+        </div>
+      </section>
+    `;
   }
 
   return html`
@@ -443,44 +481,7 @@ export function renderMetaclawPendingApprovalsInline(
                   `,
                 )}
               </div>
-              <div class="metaclaw-approval__actions">
-                <button
-                  class="btn primary"
-                  type="button"
-                  ?disabled=${props.saving}
-                  @click=${async () => {
-                    try {
-                      await props.onApprove(item.approval_id);
-                      viewState.dismissedApprovalIds = appendUnique(
-                        viewState.dismissedApprovalIds,
-                        item.approval_id,
-                      );
-                    } catch {
-                      requestUpdate();
-                    }
-                  }}
-                >
-                  Approve
-                </button>
-                <button
-                  class="btn danger"
-                  type="button"
-                  ?disabled=${props.saving}
-                  @click=${async () => {
-                    try {
-                      await props.onReject(item.approval_id);
-                      viewState.dismissedApprovalIds = appendUnique(
-                        viewState.dismissedApprovalIds,
-                        item.approval_id,
-                      );
-                    } catch {
-                      requestUpdate();
-                    }
-                  }}
-                >
-                  Reject
-                </button>
-              </div>
+              ${renderApprovalActions(item.approval_id)}
             </article>
           `,
         )}

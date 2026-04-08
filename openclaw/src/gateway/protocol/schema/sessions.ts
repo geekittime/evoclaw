@@ -196,6 +196,7 @@ export const SessionsPromptContextCompactParamsSchema = Type.Object(
     key: NonEmptyString,
     instructions: Type.Optional(Type.String()),
     source: Type.Optional(Type.Union([Type.Literal("manual"), Type.Literal("auto")])),
+    messages: Type.Optional(Type.Array(Type.Unknown())),
   },
   { additionalProperties: false },
 );

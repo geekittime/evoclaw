@@ -1185,7 +1185,7 @@ function collectExecCommandPathCandidates(command: string, cwd?: string): string
 
 function buildExecToolDescription(agentId?: string): string {
   const base =
-    "Execute shell commands with background continuation. Use yieldMs/background to continue later via process tool. Use pty=true for TTY-required commands (terminal UIs, coding agents).";
+    "Execute shell commands with background continuation. Use yieldMs/background to continue later via process tool. Use pty=true for TTY-required commands (terminal UIs, coding agents). If the user has already explicitly requested a destructive or restricted command, call exec directly instead of asking a duplicate natural-language confirmation question first; runtime approval UI will collect the decision when needed.";
   if (process.platform !== "win32") {
     return base;
   }
@@ -1445,14 +1445,15 @@ export function createExecTool(
       }
       rejectExecApprovalShellCommand(params.command);
       const primaryCommand = resolvePrimaryExecCommandName(params.command);
+      const explicitDefaultCommandMode = approvalPolicy.file.defaultCommandMode;
       const commandMode = primaryCommand
         ? approvalPolicy.commandRules[primaryCommand] ??
           (approvalPolicy.commandAllowlist.some(
             (entry) => normalizeExecCommandPolicyKey(entry) === primaryCommand,
           )
             ? "allow"
-            : approvalPolicy.defaultCommandMode)
-        : approvalPolicy.defaultCommandMode;
+            : explicitDefaultCommandMode ?? null)
+        : explicitDefaultCommandMode ?? null;
       if (commandMode === "deny") {
         throw new Error(
           primaryCommand

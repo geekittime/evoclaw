@@ -9,6 +9,7 @@ const DEEPSEEK_MODEL = "deepseek-chat";
 const MAX_SUMMARY_SOURCE_CHARS = 80_000;
 const MAX_MESSAGE_TEXT_CHARS = 6_000;
 const MAX_FALLBACK_SUMMARY_CHARS = 4_000;
+const MAX_TOOL_ARGS_CHARS = 1_200;
 
 function trimText(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
@@ -27,9 +28,33 @@ function extractMessageText(content: unknown): string {
     if (!block || typeof block !== "object") {
       continue;
     }
-    const text = (block as { text?: unknown }).text;
-    if (typeof text === "string" && text.trim()) {
-      parts.push(text.trim());
+    const record = block as Record<string, unknown>;
+    const type = typeof record.type === "string" ? record.type.toLowerCase() : "";
+    const text = typeof record.text === "string" ? record.text.trim() : "";
+    if (text) {
+      parts.push(text);
+      continue;
+    }
+    if (type === "toolcall" || type === "tool_call") {
+      const name = typeof record.name === "string" ? record.name.trim() : "tool";
+      const args =
+        record.arguments ?? record.args ?? (typeof record.input === "object" ? record.input : undefined);
+      let argsText = "";
+      if (args !== undefined) {
+        try {
+          argsText = JSON.stringify(args, null, 2);
+        } catch {
+          argsText = String(args);
+        }
+      }
+      parts.push(
+        `Tool call: ${name}${argsText ? `\n${argsText.slice(0, MAX_TOOL_ARGS_CHARS)}` : ""}`.trim(),
+      );
+      continue;
+    }
+    if (type === "toolresult" || type === "tool_result") {
+      const name = typeof record.name === "string" ? record.name.trim() : "tool";
+      parts.push(`Tool result: ${name}`);
     }
   }
   return parts.join("\n");

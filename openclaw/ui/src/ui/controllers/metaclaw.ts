@@ -1,5 +1,8 @@
 import { CONTROL_UI_METACLAW_PROXY_PREFIX } from "../../../../src/gateway/control-ui-contract.js";
-import { resolveAgentIdFromSessionKey } from "../../../../src/routing/session-key.js";
+import {
+  parseAgentSessionKey,
+  resolveAgentIdFromSessionKey,
+} from "../../../../src/routing/session-key.js";
 import type { GatewayBrowserClient } from "../gateway.ts";
 import { inferBasePathFromPathname, normalizeBasePath } from "../navigation.ts";
 import type { ExecApprovalRequest } from "./exec-approval.ts";
@@ -189,7 +192,38 @@ function resolveCurrentAgentId(sessionKey: string) {
   return resolveAgentIdFromSessionKey(sessionKey) || "main";
 }
 
-function mapExecApprovalQueue(
+function matchesPendingApprovalSession(currentSessionKey: string, approvalSessionKey?: string | null) {
+  const normalizedCurrent = currentSessionKey.trim();
+  const normalizedApproval = approvalSessionKey?.trim() ?? "";
+  if (!normalizedApproval || normalizedApproval === normalizedCurrent) {
+    return true;
+  }
+
+  const currentParsed = parseAgentSessionKey(normalizedCurrent);
+  const approvalParsed = parseAgentSessionKey(normalizedApproval);
+
+  if (currentParsed && currentParsed.rest === normalizedApproval) {
+    return true;
+  }
+  if (approvalParsed && approvalParsed.rest === normalizedCurrent) {
+    return true;
+  }
+  if (currentParsed && approvalParsed) {
+    return (
+      currentParsed.agentId === approvalParsed.agentId && currentParsed.rest === approvalParsed.rest
+    );
+  }
+
+  const currentAgentId = resolveAgentIdFromSessionKey(normalizedCurrent);
+  const approvalAgentId = resolveAgentIdFromSessionKey(normalizedApproval);
+  if (!currentAgentId || !approvalAgentId || currentAgentId !== approvalAgentId) {
+    return false;
+  }
+
+  return normalizedCurrent === "main" || normalizedApproval === "main";
+}
+
+export function mapExecApprovalQueueForSession(
   queue: ExecApprovalRequest[] | undefined,
   sessionKey: string,
 ): MetaclawPendingApproval[] {
@@ -199,7 +233,7 @@ function mapExecApprovalQueue(
   const relevant = queue.filter(
     (entry) =>
       entry.kind === "exec" &&
-      (!entry.request.sessionKey || entry.request.sessionKey === sessionKey),
+      matchesPendingApprovalSession(sessionKey, entry.request.sessionKey),
   );
   if (relevant.length === 0) {
     return [];
@@ -537,7 +571,10 @@ export async function loadMetaclawState(state: MetaclawState) {
     state.metaclawConnected = false;
     state.metaclawError = null;
     state.metaclawSections = createInitialMetaclawSectionsState();
-    state.metaclawPendingApprovals = mapExecApprovalQueue(state.execApprovalQueue, state.sessionKey);
+    state.metaclawPendingApprovals = mapExecApprovalQueueForSession(
+      state.execApprovalQueue,
+      state.sessionKey,
+    );
     return;
   }
   state.metaclawLoading = true;
@@ -587,7 +624,10 @@ export async function loadMetaclawState(state: MetaclawState) {
       connected ||= requestError.reachable;
     }
 
-    state.metaclawPendingApprovals = mapExecApprovalQueue(state.execApprovalQueue, state.sessionKey);
+    state.metaclawPendingApprovals = mapExecApprovalQueueForSession(
+      state.execApprovalQueue,
+      state.sessionKey,
+    );
     if (state.connected) {
       sections.pendingApprovals = createSectionState("ready");
     } else {
@@ -658,6 +698,7 @@ export async function compactMetaclawConversationHistory(
         Array.isArray(messages) && messages.length > 0
           ? "Summarize the current chat for future continuation while keeping goals, files, approvals, and user preferences."
           : undefined,
+      messages: Array.isArray(messages) ? messages : [],
     });
     state.metaclawContextSummary = {
       session_id: result.session_id,
@@ -753,7 +794,10 @@ export async function waitForMetaclawApprovalResolution(
   const startedAt = Date.now();
 
   while (true) {
-    state.metaclawPendingApprovals = mapExecApprovalQueue(state.execApprovalQueue, state.sessionKey);
+    state.metaclawPendingApprovals = mapExecApprovalQueueForSession(
+      state.execApprovalQueue,
+      state.sessionKey,
+    );
     if (!state.metaclawPendingApprovals.some((item) => item.approval_id === approvalId)) {
       state.metaclawError = null;
       return;
