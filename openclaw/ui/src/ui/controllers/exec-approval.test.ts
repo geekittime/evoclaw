@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { parseExecApprovalRequested, parsePluginApprovalRequested } from "./exec-approval.ts";
+import {
+  addExecApproval,
+  parseExecApprovalRequested,
+  parsePluginApprovalRequested,
+} from "./exec-approval.ts";
 
 describe("parseExecApprovalRequested", () => {
   it("returns entries with kind 'exec'", () => {
@@ -94,5 +98,27 @@ describe("parsePluginApprovalRequested", () => {
     expect(result!.pluginId).toBeNull();
     expect(result!.request.agentId).toBeNull();
     expect(result!.request.sessionKey).toBeNull();
+  });
+});
+
+describe("addExecApproval", () => {
+  it("keeps only the most recent approval request", () => {
+    const now = Date.now();
+    const first = {
+      id: "approval-1",
+      kind: "exec" as const,
+      request: { command: "find /tmp -name '*.py'" },
+      createdAtMs: now - 5_000,
+      expiresAtMs: now + 60_000,
+    };
+    const second = {
+      id: "approval-2",
+      kind: "exec" as const,
+      request: { command: "rm /tmp/demo.py" },
+      createdAtMs: now,
+      expiresAtMs: now + 60_000,
+    };
+
+    expect(addExecApproval([first], second)).toEqual([second]);
   });
 });

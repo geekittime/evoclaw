@@ -225,6 +225,7 @@ export class OpenClawApp extends LitElement {
   @state() execApprovalQueue: ExecApprovalRequest[] = [];
   @state() execApprovalBusy = false;
   @state() execApprovalError: string | null = null;
+  execApprovalDismissedIds: string[] = [];
   @state() metaclawEnabled = METACLAW_UI_ENABLED;
   @state() pendingGatewayUrl: string | null = null;
   pendingGatewayToken: string | null = null;
@@ -768,6 +769,10 @@ export class OpenClawApp extends LitElement {
     }
     this.execApprovalBusy = true;
     this.execApprovalError = null;
+    this.execApprovalDismissedIds = Array.from(
+      new Set([...this.execApprovalDismissedIds, active.id]),
+    );
+    this.execApprovalQueue = this.execApprovalQueue.filter((entry) => entry.id !== active.id);
     try {
       if (active.source === "assistant-fallback") {
         const command = active.request.command;
@@ -799,7 +804,6 @@ export class OpenClawApp extends LitElement {
             appendAssistantErrorOnFailure: true,
           },
         );
-        this.execApprovalQueue = this.execApprovalQueue.filter((entry) => entry.id !== active.id);
         return;
       }
 
@@ -808,9 +812,13 @@ export class OpenClawApp extends LitElement {
         id: active.id,
         decision,
       });
-      this.execApprovalQueue = this.execApprovalQueue.filter((entry) => entry.id !== active.id);
     } catch (err) {
-      this.execApprovalError = `Approval failed: ${String(err)}`;
+      const message = String(err);
+      if (/unknown or expired approval id|approval expired or not found/i.test(message)) {
+        this.execApprovalError = null;
+        return;
+      }
+      this.execApprovalError = `Approval failed: ${message}`;
     } finally {
       this.execApprovalBusy = false;
     }

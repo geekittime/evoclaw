@@ -48,6 +48,7 @@ type ToolStreamHost = {
   chatToolMessages: Record<string, unknown>[];
   toolStreamSyncTimer: number | null;
   execApprovalQueue?: ExecApprovalRequest[];
+  execApprovalDismissedIds?: string[];
 };
 
 function toTrimmedString(value: unknown): string | null {
@@ -591,18 +592,20 @@ export function handleAgentEvent(host: ToolStreamHost, payload?: AgentEventPaylo
 
   entry.message = buildToolStreamMessage(entry);
   if (approval && Array.isArray(host.execApprovalQueue)) {
-    host.execApprovalQueue = addExecApproval(host.execApprovalQueue, {
-      id: approval.approvalId,
-      kind: "exec",
-      request: {
-        command: approval.command,
-        cwd: approval.cwd ?? null,
-        host: approval.host,
-        sessionKey: sessionKey ?? host.sessionKey,
-      },
-      createdAtMs: typeof payload.ts === "number" ? payload.ts : now,
-      expiresAtMs: approval.expiresAtMs ?? now + 60_000,
-    });
+    if (!host.execApprovalDismissedIds?.includes(approval.approvalId)) {
+      host.execApprovalQueue = addExecApproval(host.execApprovalQueue, {
+        id: approval.approvalId,
+        kind: "exec",
+        request: {
+          command: approval.command,
+          cwd: approval.cwd ?? null,
+          host: approval.host,
+          sessionKey: sessionKey ?? host.sessionKey,
+        },
+        createdAtMs: typeof payload.ts === "number" ? payload.ts : now,
+        expiresAtMs: approval.expiresAtMs ?? now + 60_000,
+      });
+    }
   }
   trimToolStream(host);
   scheduleToolStreamSync(host, phase === "result");

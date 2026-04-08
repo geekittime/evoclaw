@@ -134,9 +134,7 @@ export function addExecApproval(
   queue: ExecApprovalRequest[],
   entry: ExecApprovalRequest,
 ): ExecApprovalRequest[] {
-  const next = pruneExecApprovalQueue(queue).filter((item) => item.id !== entry.id);
-  next.unshift(entry);
-  return next;
+  return [entry];
 }
 
 export function removeExecApproval(

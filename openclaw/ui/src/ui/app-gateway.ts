@@ -86,6 +86,7 @@ type GatewayHost = {
   chatRunId: string | null;
   refreshSessionsAfterChat: Set<string>;
   execApprovalQueue: ExecApprovalRequest[];
+  execApprovalDismissedIds?: string[];
   execApprovalError: string | null;
   updateAvailable: UpdateAvailable | null;
   scheduleMetaclawRefresh?: (delayMs?: number) => void;
@@ -432,6 +433,9 @@ function handleGatewayEventUnsafe(host: GatewayHost, evt: GatewayEventFrame) {
   if (evt.event === "exec.approval.requested") {
     const entry = parseExecApprovalRequested(evt.payload);
     if (entry) {
+      if (host.execApprovalDismissedIds?.includes(entry.id)) {
+        return;
+      }
       host.execApprovalQueue = addExecApproval(host.execApprovalQueue, entry);
       host.execApprovalError = null;
       host.scheduleMetaclawRefresh?.(0);
@@ -456,6 +460,9 @@ function handleGatewayEventUnsafe(host: GatewayHost, evt: GatewayEventFrame) {
   if (evt.event === "plugin.approval.requested") {
     const entry = parsePluginApprovalRequested(evt.payload);
     if (entry) {
+      if (host.execApprovalDismissedIds?.includes(entry.id)) {
+        return;
+      }
       host.execApprovalQueue = addExecApproval(host.execApprovalQueue, entry);
       host.execApprovalError = null;
       host.scheduleMetaclawRefresh?.(0);

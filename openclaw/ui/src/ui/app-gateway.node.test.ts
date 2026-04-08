@@ -150,6 +150,7 @@ function createHost() {
     toolStreamSyncTimer: null,
     refreshSessionsAfterChat: new Set<string>(),
     execApprovalQueue: [],
+    execApprovalDismissedIds: [],
     execApprovalError: null,
     updateAvailable: null,
     scheduleMetaclawRefresh: vi.fn(),
@@ -340,6 +341,23 @@ describe("connectGateway", () => {
       latestVersion: "2.0.0",
       channel: "latest",
     });
+  });
+
+  it("ignores requested approvals whose ids were already dismissed locally", () => {
+    const { host, client } = connectHostGateway();
+    host.execApprovalDismissedIds = ["approval-1"];
+
+    client.emitEvent({
+      event: "exec.approval.requested",
+      payload: {
+        id: "approval-1",
+        request: { command: "rm /tmp/demo.py" },
+        createdAtMs: Date.now(),
+        expiresAtMs: Date.now() + 60_000,
+      },
+    });
+
+    expect(host.execApprovalQueue).toHaveLength(0);
   });
 
   it("ignores stale client onClose callbacks after reconnect", () => {

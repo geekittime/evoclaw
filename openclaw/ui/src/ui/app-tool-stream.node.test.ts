@@ -9,6 +9,7 @@ type MutableHost = ToolStreamHost & {
   fallbackStatus?: FallbackStatus | null;
   fallbackClearTimer?: number | null;
   execApprovalQueue?: ExecApprovalRequest[];
+  execApprovalDismissedIds?: string[];
 };
 
 function createHost(overrides?: Partial<MutableHost>): MutableHost {
@@ -23,6 +24,7 @@ function createHost(overrides?: Partial<MutableHost>): MutableHost {
     chatToolMessages: [],
     toolStreamSyncTimer: null,
     execApprovalQueue: [],
+    execApprovalDismissedIds: [],
     compactionStatus: null,
     compactionClearTimer: null,
     fallbackStatus: null,
@@ -374,5 +376,36 @@ describe("app-tool-stream exec approval metadata", () => {
         sessionKey: "main",
       },
     });
+  });
+
+  it("does not re-add a dismissed approval id from tool stream metadata", () => {
+    const host = createHost({
+      execApprovalDismissedIds: ["appr_full_123"],
+    });
+
+    handleAgentEvent(host, {
+      runId: "run-approval",
+      seq: 1,
+      stream: "tool",
+      ts: Date.now(),
+      sessionKey: "main",
+      data: {
+        phase: "result",
+        toolCallId: "tool-exec-approval",
+        name: "exec",
+        result: {
+          details: {
+            status: "approval-pending",
+            approvalId: "appr_full_123",
+            approvalSlug: "appr1234",
+            host: "gateway",
+            command: "rm -rf /tmp/demo/*",
+            cwd: "/tmp/demo",
+          },
+        },
+      },
+    });
+
+    expect(host.execApprovalQueue).toHaveLength(0);
   });
 });
