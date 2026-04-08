@@ -56,13 +56,22 @@ import type { AppViewState } from "./app-view-state.ts";
 import { normalizeAssistantIdentity } from "./assistant-identity.ts";
 import { exportChatMarkdown } from "./chat/export.ts";
 import {
+  buildAssistantApprovalFollowupMessage,
+  extractCommandHead,
+} from "./chat/metaclaw-approval.ts";
+import {
   loadToolsEffective as loadToolsEffectiveInternal,
   refreshVisibleToolsEffectiveForCurrentSession as refreshVisibleToolsEffectiveForCurrentSessionInternal,
 } from "./controllers/agents.ts";
 import { loadAssistantIdentity as loadAssistantIdentityInternal } from "./controllers/assistant-identity.ts";
+import {
+  METACLAW_APPROVAL_SOURCE_TOOL,
+  sendHiddenSystemChatMessage,
+} from "./controllers/chat.ts";
 import type { DevicePairingList } from "./controllers/devices.ts";
 import type { ExecApprovalRequest } from "./controllers/exec-approval.ts";
 import type { ExecApprovalsFile, ExecApprovalsSnapshot } from "./controllers/exec-approvals.ts";
+import { saveExecApprovals as saveExecApprovalsInternal } from "./controllers/exec-approvals.ts";
 import {
   createInitialMetaclawSectionsState,
   loadMetaclawSettings,
@@ -760,6 +769,40 @@ export class OpenClawApp extends LitElement {
     this.execApprovalBusy = true;
     this.execApprovalError = null;
     try {
+      if (active.source === "assistant-fallback") {
+        const command = active.request.command;
+        if (decision === "allow-always") {
+          const commandHead = extractCommandHead(command);
+          if (commandHead) {
+            const base = this.execApprovalsForm ?? this.execApprovalsSnapshot?.file ?? {};
+            const nextAllowlist = [
+              ...new Set([...(base.commandAllowlist ?? []), commandHead]),
+            ].sort((left, right) => left.localeCompare(right));
+            this.execApprovalsForm = {
+              ...base,
+              commandAllowlist: nextAllowlist,
+            };
+            this.execApprovalsDirty = true;
+            try {
+              await saveExecApprovalsInternal(this);
+            } catch (error) {
+              this.execApprovalError = `Allowlist save failed: ${String(error)}`;
+            }
+          }
+        }
+
+        await sendHiddenSystemChatMessage(
+          this,
+          buildAssistantApprovalFollowupMessage(command, decision),
+          {
+            sourceTool: METACLAW_APPROVAL_SOURCE_TOOL,
+            appendAssistantErrorOnFailure: true,
+          },
+        );
+        this.execApprovalQueue = this.execApprovalQueue.filter((entry) => entry.id !== active.id);
+        return;
+      }
+
       const method = active.kind === "plugin" ? "plugin.approval.resolve" : "exec.approval.resolve";
       await this.client.request(method, {
         id: active.id,

@@ -168,6 +168,7 @@ export async function callGatewayTool<T = Record<string, unknown>>(
       },
       client: scope.client,
       isWebchatConnect: scope.isWebchatConnect,
+      extraHandlers: scope.extraHandlers,
       respond: (ok, payload, error) => {
         if (!result) {
           result = { ok, payload, error };

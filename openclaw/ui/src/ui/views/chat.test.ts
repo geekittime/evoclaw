@@ -1174,6 +1174,75 @@ If the short code is ambiguous, use the full id in /approve.`,
     }
   });
 
+  it("renders top approval buttons from structured tool-result approval metadata without relying on approval text", async () => {
+    const onApprove = vi.fn();
+    const onReject = vi.fn();
+    const container = document.createElement("div");
+    cleanupChatModuleState();
+    try {
+      render(
+        renderChat(
+          createProps({
+            metaclaw: createMetaclawProps({
+              pendingApprovals: [],
+              onApprove,
+              onReject,
+            }),
+            toolMessages: [
+              {
+                role: "assistant",
+                toolCallId: "tool-exec-approval-structured",
+                content: [
+                  {
+                    type: "toolcall",
+                    name: "exec",
+                    arguments: {},
+                  },
+                  {
+                    type: "toolresult",
+                    name: "exec",
+                    text: "{\n  \"status\": \"approval-pending\"\n}",
+                    approval: {
+                      approvalId: "appr_structured_001",
+                      approvalSlug: "appr0001",
+                      host: "gateway",
+                      command: "rm -rf /home/kangshijia/wangbinyu/temp/evoclaw/temp0/*",
+                    },
+                  },
+                ],
+                timestamp: 1000,
+              },
+            ],
+            messages: [
+              {
+                role: "assistant",
+                content:
+                  "需要你批准删除操作。\n删除命令：rm -rf /home/kangshijia/wangbinyu/temp/evoclaw/temp0/*",
+                timestamp: 1001,
+              },
+            ],
+          }),
+        ),
+        container,
+      );
+
+      expect(container.textContent).toContain("Pending Command Approvals");
+      expect(container.textContent).toContain("appr_structured_001");
+      expect(container.textContent).toContain("Approve");
+      expect(container.textContent).toContain("Reject");
+
+      const buttons = Array.from(container.querySelectorAll("button"));
+      buttons.find((button) => button.textContent?.includes("Approve"))?.click();
+      buttons.find((button) => button.textContent?.includes("Reject"))?.click();
+      await flushTasks();
+
+      expect(onApprove).toHaveBeenCalledWith("appr_structured_001");
+      expect(onReject).toHaveBeenCalledWith("appr_structured_001");
+    } finally {
+      cleanupChatModuleState();
+    }
+  });
+
   it("does not render approval transcript text when the assistant only reports a pending approval", () => {
     const container = document.createElement("div");
     cleanupChatModuleState();

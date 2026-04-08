@@ -1006,6 +1006,54 @@ describe("agent event handler", () => {
     resetAgentRunContextForTest();
   });
 
+  it("keeps approval-pending tool metadata when verbose is on", () => {
+    const { broadcastToConnIds, toolEventRecipients, handler } = createHarness({
+      resolveSessionKeyForRun: () => "session-1",
+    });
+
+    registerAgentRunContext("run-tool-approval", { sessionKey: "session-1", verboseLevel: "on" });
+    toolEventRecipients.add("run-tool-approval", "conn-1");
+
+    handler({
+      runId: "run-tool-approval",
+      seq: 1,
+      stream: "tool",
+      ts: Date.now(),
+      data: {
+        phase: "result",
+        name: "exec",
+        toolCallId: "t-approval",
+        result: {
+          details: {
+            status: "approval-pending",
+            approvalId: "appr_full_123",
+            approvalSlug: "appr1234",
+            host: "gateway",
+            command: "rm -rf /tmp/demo/*",
+            cwd: "/tmp/demo",
+            allowedDecisions: ["allow-once", "allow-always", "deny"],
+          },
+        },
+      },
+    });
+
+    expect(broadcastToConnIds).toHaveBeenCalledTimes(1);
+    const payload = broadcastToConnIds.mock.calls[0]?.[1] as { data?: Record<string, unknown> };
+    expect(payload.data?.result).toEqual({
+      details: {
+        status: "approval-pending",
+        approvalId: "appr_full_123",
+        approvalSlug: "appr1234",
+        host: "gateway",
+        command: "rm -rf /tmp/demo/*",
+        cwd: "/tmp/demo",
+        allowedDecisions: ["allow-once", "allow-always", "deny"],
+      },
+    });
+    expect(payload.data?.partialResult).toBeUndefined();
+    resetAgentRunContextForTest();
+  });
+
   it("keeps tool output when verbose is full", () => {
     const { broadcastToConnIds, toolEventRecipients, handler } = createHarness({
       resolveSessionKeyForRun: () => "session-1",

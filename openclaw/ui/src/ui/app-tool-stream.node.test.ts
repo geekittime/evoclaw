@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { handleAgentEvent, type FallbackStatus, type ToolStreamEntry } from "./app-tool-stream.ts";
+import type { ExecApprovalRequest } from "./controllers/exec-approval.ts";
 
 type ToolStreamHost = Parameters<typeof handleAgentEvent>[0];
 type MutableHost = ToolStreamHost & {
@@ -7,6 +8,7 @@ type MutableHost = ToolStreamHost & {
   compactionClearTimer?: number | null;
   fallbackStatus?: FallbackStatus | null;
   fallbackClearTimer?: number | null;
+  execApprovalQueue?: ExecApprovalRequest[];
 };
 
 function createHost(overrides?: Partial<MutableHost>): MutableHost {
@@ -20,6 +22,7 @@ function createHost(overrides?: Partial<MutableHost>): MutableHost {
     toolStreamOrder: [],
     chatToolMessages: [],
     toolStreamSyncTimer: null,
+    execApprovalQueue: [],
     compactionStatus: null,
     compactionClearTimer: null,
     fallbackStatus: null,
@@ -308,5 +311,68 @@ describe("app-tool-stream fallback lifecycle handling", () => {
     expect(host.compactionClearTimer).toBeNull();
 
     vi.useRealTimers();
+  });
+});
+
+describe("app-tool-stream exec approval metadata", () => {
+  beforeAll(() => {
+    const globalWithWindow = globalThis as typeof globalThis & {
+      window?: Window & typeof globalThis;
+    };
+    if (!globalWithWindow.window) {
+      globalWithWindow.window = globalThis as unknown as Window & typeof globalThis;
+    }
+  });
+
+  it("preserves structured approval metadata in tool stream messages", () => {
+    const host = createHost();
+
+    handleAgentEvent(host, {
+      runId: "run-approval",
+      seq: 1,
+      stream: "tool",
+      ts: Date.now(),
+      sessionKey: "main",
+      data: {
+        phase: "result",
+        toolCallId: "tool-exec-approval",
+        name: "exec",
+        result: {
+          details: {
+            status: "approval-pending",
+            approvalId: "appr_full_123",
+            approvalSlug: "appr1234",
+            host: "gateway",
+            command: "rm -rf /tmp/demo/*",
+            cwd: "/tmp/demo",
+            allowedDecisions: ["allow-once", "allow-always", "deny"],
+          },
+        },
+      },
+    });
+
+    expect(host.chatToolMessages).toHaveLength(1);
+    const message = host.chatToolMessages[0] as { content?: Array<Record<string, unknown>> };
+    const toolResult = Array.isArray(message.content)
+      ? message.content.find((item) => item.type === "toolresult")
+      : null;
+    expect(toolResult).toMatchObject({
+      approval: {
+        approvalId: "appr_full_123",
+        approvalSlug: "appr1234",
+        host: "gateway",
+        command: "rm -rf /tmp/demo/*",
+      },
+    });
+    expect(host.execApprovalQueue).toHaveLength(1);
+    expect(host.execApprovalQueue?.[0]).toMatchObject({
+      id: "appr_full_123",
+      request: {
+        command: "rm -rf /tmp/demo/*",
+        cwd: "/tmp/demo",
+        host: "gateway",
+        sessionKey: "main",
+      },
+    });
   });
 });

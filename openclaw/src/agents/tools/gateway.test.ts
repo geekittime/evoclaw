@@ -11,6 +11,7 @@ const gatewayScopeState = vi.hoisted(() => ({
         context: Record<string, unknown>;
         client: Record<string, unknown>;
         isWebchatConnect: (params: unknown) => boolean;
+        extraHandlers?: Record<string, unknown>;
       }
     | undefined,
 }));
@@ -237,6 +238,31 @@ describe("gateway tool defaults", () => {
     expect(result).toEqual({ ok: true, source: "direct-dispatch" });
     expect(handleGatewayRequestMock).toHaveBeenCalledTimes(1);
     expect(callGatewayMock).not.toHaveBeenCalled();
+  });
+
+  it("forwards request-scoped extra handlers during direct dispatch", async () => {
+    const scopedExtraHandlers = {
+      "exec.approval.request": vi.fn(),
+    };
+    gatewayScopeState.scope = {
+      context: { marker: "gateway-context" },
+      client: { connect: { role: "operator", scopes: ["operator.admin"] } },
+      isWebchatConnect: () => false,
+      extraHandlers: scopedExtraHandlers,
+    };
+    handleGatewayRequestMock.mockImplementationOnce(async (opts) => {
+      (opts as { respond: (ok: boolean, payload?: unknown) => void }).respond(true, {
+        ok: true,
+      });
+    });
+
+    await callGatewayTool("exec.approval.request", {}, { id: "approval-2" });
+
+    expect(handleGatewayRequestMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        extraHandlers: scopedExtraHandlers,
+      }),
+    );
   });
 
   it("still uses websocket gateway calls when an explicit gatewayUrl override is provided", async () => {

@@ -4,9 +4,16 @@ import {
   type InputProvenance,
 } from "../../../../src/sessions/input-provenance.js";
 import { resetToolStream } from "../app-tool-stream.ts";
-import { isAssistantMetaclawApprovalPromptMessage } from "../chat/metaclaw-approval.ts";
+import {
+  buildAssistantApprovalFollowupMessage,
+  extractCommandHead,
+  isAssistantMetaclawApprovalPromptMessage,
+  parseAssistantSuggestedExecApprovalMessage,
+} from "../chat/metaclaw-approval.ts";
 import { extractText } from "../chat/message-extract.ts";
 import { formatConnectError } from "../connect-error.ts";
+import { addExecApproval, type ExecApprovalRequest } from "./exec-approval.ts";
+import type { ExecApprovalsFile, ExecApprovalsSnapshot } from "./exec-approvals.ts";
 import type { GatewayBrowserClient } from "../gateway.ts";
 import type { ChatAttachment } from "../ui-types.ts";
 import { generateUUID } from "../uuid.ts";
@@ -68,7 +75,161 @@ export type ChatState = {
   chatStream: string | null;
   chatStreamStartedAt: number | null;
   lastError: string | null;
+  execApprovalQueue?: ExecApprovalRequest[];
+  execApprovalsForm?: ExecApprovalsFile | null;
+  execApprovalsSnapshot?: ExecApprovalsSnapshot | null;
+  execApprovalError?: string | null;
 };
+
+function normalizeCommandForPolicy(command: string): string {
+  return command.trim().toLowerCase();
+}
+
+function matchesPolicyCommand(pattern: string, commandText: string, commandHead: string): boolean {
+  const normalizedPattern = normalizeCommandForPolicy(pattern);
+  return (
+    normalizedPattern.length > 0 &&
+    (normalizedPattern === normalizeCommandForPolicy(commandText) ||
+      normalizedPattern === normalizeCommandForPolicy(commandHead))
+  );
+}
+
+function resolveExecApprovalsFile(state: ChatState): ExecApprovalsFile {
+  return state.execApprovalsForm ?? state.execApprovalsSnapshot?.file ?? {};
+}
+
+function resolveSuggestedCommandMode(
+  state: ChatState,
+  commandText: string,
+): "allow" | "ask" | "deny" {
+  const file = resolveExecApprovalsFile(state);
+  const commandHead = extractCommandHead(commandText);
+
+  const allowlist = Array.isArray(file.commandAllowlist) ? file.commandAllowlist : [];
+  if (allowlist.some((pattern) => matchesPolicyCommand(pattern, commandText, commandHead))) {
+    return "allow";
+  }
+
+  const commandRules = file.commandRules ?? {};
+  for (const [pattern, mode] of Object.entries(commandRules)) {
+    if (matchesPolicyCommand(pattern, commandText, commandHead)) {
+      return mode;
+    }
+  }
+
+  return file.defaultCommandMode ?? "ask";
+}
+
+function hashText(value: string): string {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
+  }
+  return hash.toString(16);
+}
+
+function buildAssistantFallbackApprovalId(
+  sessionKey: string,
+  commandText: string,
+  timestamp: number,
+): string {
+  return `assistant-fallback:${hashText(`${sessionKey}:${timestamp}:${commandText}`)}`;
+}
+
+function isAssistantFallbackApproval(entry: ExecApprovalRequest): boolean {
+  return entry.source === "assistant-fallback";
+}
+
+function removeAssistantFallbackApprovals(state: ChatState) {
+  if (!Array.isArray(state.execApprovalQueue)) {
+    return;
+  }
+  state.execApprovalQueue = state.execApprovalQueue.filter((entry) => !isAssistantFallbackApproval(entry));
+}
+
+function hasNativeExecApproval(state: ChatState): boolean {
+  return Array.isArray(state.execApprovalQueue)
+    ? state.execApprovalQueue.some((entry) => !isAssistantFallbackApproval(entry))
+    : false;
+}
+
+function findLatestAssistantSuggestedApprovalCandidate(messages: unknown[]) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!message || typeof message !== "object") {
+      continue;
+    }
+    const entry = message as Record<string, unknown>;
+    const role = typeof entry.role === "string" ? entry.role.toLowerCase() : "";
+    if (role !== "assistant") {
+      continue;
+    }
+    const candidate = parseAssistantSuggestedExecApprovalMessage(message);
+    if (!candidate) {
+      continue;
+    }
+    const timestamp =
+      typeof entry.timestamp === "number" && Number.isFinite(entry.timestamp)
+        ? entry.timestamp
+        : index + 1;
+    return { ...candidate, timestamp };
+  }
+  return null;
+}
+
+function reconcileAssistantSuggestedApproval(
+  state: ChatState,
+  opts: {
+    autoContinue: boolean;
+  },
+) {
+  removeAssistantFallbackApprovals(state);
+  const candidate = findLatestAssistantSuggestedApprovalCandidate(state.chatMessages);
+  if (!candidate) {
+    return;
+  }
+
+  const mode = resolveSuggestedCommandMode(state, candidate.commandText);
+  if (mode === "ask") {
+    if (hasNativeExecApproval(state)) {
+      return;
+    }
+    if (!Array.isArray(state.execApprovalQueue)) {
+      state.execApprovalQueue = [];
+    }
+    state.execApprovalQueue = addExecApproval(state.execApprovalQueue, {
+      id: buildAssistantFallbackApprovalId(state.sessionKey, candidate.commandText, candidate.timestamp),
+      kind: "exec",
+      source: "assistant-fallback",
+      request: {
+        command: candidate.commandText,
+        sessionKey: state.sessionKey,
+        host: "gateway",
+        ask: candidate.detailText ?? "assistant suggested command awaiting approval",
+      },
+      createdAtMs: candidate.timestamp,
+      expiresAtMs: candidate.timestamp + 30 * 60 * 1000,
+    });
+    state.execApprovalError = null;
+    return;
+  }
+
+  if (!opts.autoContinue) {
+    return;
+  }
+
+  const decision = mode === "allow" ? "allow-once" : "deny";
+  void sendHiddenSystemChatMessage(
+    state,
+    buildAssistantApprovalFollowupMessage(candidate.commandText, decision),
+    {
+      sourceTool: METACLAW_APPROVAL_SOURCE_TOOL,
+      appendAssistantErrorOnFailure: true,
+    },
+  ).catch((error) => {
+    state.execApprovalError = `Approval follow-up failed: ${String(error)}`;
+  });
+}
 
 export type ChatEventPayload = {
   runId: string;
@@ -111,6 +272,7 @@ export async function loadChatHistory(state: ChatState) {
         !isAssistantMetaclawApprovalPromptMessage(message) &&
         !isHiddenInternalSystemMessage(message),
     );
+    reconcileAssistantSuggestedApproval(state, { autoContinue: false });
     state.chatThinkingLevel = res.thinkingLevel ?? null;
     // Clear all streaming state — history includes tool results and text
     // inline, so keeping streaming artifacts would cause duplicates.
@@ -402,6 +564,7 @@ export function handleChatEvent(state: ChatState, payload?: ChatEventPayload) {
         !isAssistantMetaclawApprovalPromptMessage(finalMessage)
       ) {
         state.chatMessages = [...state.chatMessages, finalMessage];
+        reconcileAssistantSuggestedApproval(state, { autoContinue: true });
         return null;
       }
       appendAssistantErrorMessage(state, payload.errorMessage, "error");
@@ -452,6 +615,7 @@ export function handleChatEvent(state: ChatState, payload?: ChatEventPayload) {
     state.chatStream = null;
     state.chatRunId = null;
     state.chatStreamStartedAt = null;
+    reconcileAssistantSuggestedApproval(state, { autoContinue: true });
   } else if (payload.state === "aborted") {
     const normalizedMessage = normalizeAbortedAssistantMessage(payload.message);
     if (

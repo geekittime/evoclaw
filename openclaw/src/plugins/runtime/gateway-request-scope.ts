@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type {
+  GatewayRequestHandlers,
   GatewayRequestContext,
   GatewayRequestOptions,
 } from "../../gateway/server-methods/types.js";
@@ -9,6 +10,7 @@ export type PluginRuntimeGatewayRequestScope = {
   context?: GatewayRequestContext;
   client?: GatewayRequestOptions["client"];
   isWebchatConnect: GatewayRequestOptions["isWebchatConnect"];
+  extraHandlers?: GatewayRequestHandlers;
   pluginId?: string;
 };
 

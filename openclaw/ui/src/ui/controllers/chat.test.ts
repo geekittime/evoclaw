@@ -24,6 +24,7 @@ function createState(overrides: Partial<ChatState> = {}): ChatState {
     chatThinkingLevel: null,
     client: null,
     connected: true,
+    execApprovalQueue: [],
     lastError: null,
     sessionKey: "main",
     ...overrides,
@@ -583,6 +584,94 @@ describe("handleChatEvent", () => {
       errorMessage: "Connection error.",
       content: [{ type: "text", text: "Connection error." }],
     });
+  });
+
+  it("creates a synthetic exec approval when assistant proposes a destructive command requiring approval", () => {
+    const state = createState({
+      sessionKey: "main",
+      chatRunId: "run-1",
+      execApprovalsForm: {
+        defaultCommandMode: "ask",
+      },
+    });
+
+    const payload: ChatEventPayload = {
+      runId: "run-1",
+      sessionKey: "main",
+      state: "final",
+      message: {
+        role: "assistant",
+        timestamp: 1234,
+        content: [
+          {
+            type: "text",
+            text: [
+              "找到一个 .py 文件。",
+              "删除命令： `rm /tmp/demo.py`",
+              "需要你批准这个删除操作。",
+            ].join("\n"),
+          },
+        ],
+      },
+    };
+
+    expect(handleChatEvent(state, payload)).toBe("final");
+    expect(state.execApprovalQueue).toHaveLength(1);
+    expect(state.execApprovalQueue?.[0]).toMatchObject({
+      source: "assistant-fallback",
+      request: {
+        command: "rm /tmp/demo.py",
+        sessionKey: "main",
+      },
+    });
+  });
+
+  it("auto-continues suggested command approvals when command head is already allowlisted", async () => {
+    const request = vi.fn(async () => ({ ok: true }));
+    const state = createState({
+      sessionKey: "main",
+      chatRunId: "run-1",
+      client: { request } as unknown as ChatState["client"],
+      execApprovalsForm: {
+        commandAllowlist: ["rm"],
+        defaultCommandMode: "ask",
+      },
+    });
+
+    const payload: ChatEventPayload = {
+      runId: "run-1",
+      sessionKey: "main",
+      state: "final",
+      message: {
+        role: "assistant",
+        timestamp: 2222,
+        content: [
+          {
+            type: "text",
+            text: [
+              "删除命令： `rm /tmp/demo.py`",
+              "需要你批准这个删除操作。",
+            ].join("\n"),
+          },
+        ],
+      },
+    };
+
+    expect(handleChatEvent(state, payload)).toBe("final");
+    await Promise.resolve();
+    expect(state.execApprovalQueue).toHaveLength(0);
+    expect(request).toHaveBeenCalledWith(
+      "chat.send",
+      expect.objectContaining({
+        sessionKey: "main",
+        deliver: false,
+        systemInputProvenance: expect.objectContaining({
+          kind: "internal_system",
+          sourceTool: METACLAW_APPROVAL_SOURCE_TOOL,
+        }),
+        message: expect.stringContaining("用户已批准执行这条 shell 命令"),
+      }),
+    );
   });
 });
 

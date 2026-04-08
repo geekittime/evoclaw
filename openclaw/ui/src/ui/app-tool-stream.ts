@@ -1,4 +1,5 @@
 import { truncateText } from "./format.ts";
+import { addExecApproval, type ExecApprovalRequest } from "./controllers/exec-approval.ts";
 
 const TOOL_STREAM_LIMIT = 50;
 const TOOL_STREAM_THROTTLE_MS = 80;
@@ -20,6 +21,17 @@ export type ToolStreamEntry = {
   name: string;
   args?: unknown;
   output?: string;
+  approval?: {
+    approvalId: string;
+    approvalSlug: string;
+    allowedDecisions?: string[];
+    command: string;
+    cwd?: string;
+    host: "gateway" | "node";
+    nodeId?: string;
+    warningText?: string;
+    expiresAtMs?: number;
+  };
   startedAt: number;
   updatedAt: number;
   message: Record<string, unknown>;
@@ -35,6 +47,7 @@ type ToolStreamHost = {
   toolStreamOrder: string[];
   chatToolMessages: Record<string, unknown>[];
   toolStreamSyncTimer: number | null;
+  execApprovalQueue?: ExecApprovalRequest[];
 };
 
 function toTrimmedString(value: unknown): string | null {
@@ -171,6 +184,47 @@ function formatToolOutput(value: unknown): string | null {
   return `${truncated.text}\n\n… truncated (${truncated.total} chars, showing first ${truncated.text.length}).`;
 }
 
+function extractApprovalPending(value: unknown): ToolStreamEntry["approval"] | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const outer = value as Record<string, unknown>;
+  const details =
+    outer.details && typeof outer.details === "object" && !Array.isArray(outer.details)
+      ? (outer.details as Record<string, unknown>)
+      : outer;
+  if (details.status !== "approval-pending") {
+    return undefined;
+  }
+  const approvalId = typeof details.approvalId === "string" ? details.approvalId.trim() : "";
+  const approvalSlug = typeof details.approvalSlug === "string" ? details.approvalSlug.trim() : "";
+  const command = typeof details.command === "string" ? details.command.trim() : "";
+  const host = details.host === "node" ? "node" : details.host === "gateway" ? "gateway" : null;
+  if (!approvalId || !approvalSlug || !command || !host) {
+    return undefined;
+  }
+  const allowedDecisions = Array.isArray(details.allowedDecisions)
+    ? details.allowedDecisions.filter(
+        (decision): decision is string => typeof decision === "string" && decision.trim().length > 0,
+      )
+    : undefined;
+  return {
+    approvalId,
+    approvalSlug,
+    ...(allowedDecisions?.length ? { allowedDecisions } : {}),
+    command,
+    host,
+    ...(typeof details.cwd === "string" && details.cwd.trim() ? { cwd: details.cwd.trim() } : {}),
+    ...(typeof details.nodeId === "string" && details.nodeId.trim()
+      ? { nodeId: details.nodeId.trim() }
+      : {}),
+    ...(typeof details.warningText === "string" && details.warningText.trim()
+      ? { warningText: details.warningText.trim() }
+      : {}),
+    ...(typeof details.expiresAtMs === "number" ? { expiresAtMs: details.expiresAtMs } : {}),
+  };
+}
+
 function buildToolStreamMessage(entry: ToolStreamEntry): Record<string, unknown> {
   const content: Array<Record<string, unknown>> = [];
   content.push({
@@ -179,11 +233,15 @@ function buildToolStreamMessage(entry: ToolStreamEntry): Record<string, unknown>
     arguments: entry.args ?? {},
   });
   if (entry.output) {
-    content.push({
+    const resultBlock: Record<string, unknown> = {
       type: "toolresult",
       name: entry.name,
       text: entry.output,
-    });
+    };
+    if (entry.approval) {
+      resultBlock.approval = entry.approval;
+    }
+    content.push(resultBlock);
   }
   return {
     role: "assistant",
@@ -485,6 +543,7 @@ export function handleAgentEvent(host: ToolStreamHost, payload?: AgentEventPaylo
   const name = typeof data.name === "string" ? data.name : "tool";
   const phase = typeof data.phase === "string" ? data.phase : "";
   const args = phase === "start" ? data.args : undefined;
+  const approval = phase === "result" ? extractApprovalPending(data.result) : undefined;
   const output =
     phase === "update"
       ? formatToolOutput(data.partialResult)
@@ -509,6 +568,7 @@ export function handleAgentEvent(host: ToolStreamHost, payload?: AgentEventPaylo
       name,
       args,
       output: output || undefined,
+      approval,
       startedAt: typeof payload.ts === "number" ? payload.ts : now,
       updatedAt: now,
       message: {},
@@ -523,10 +583,27 @@ export function handleAgentEvent(host: ToolStreamHost, payload?: AgentEventPaylo
     if (output !== undefined) {
       entry.output = output || undefined;
     }
+    if (approval !== undefined) {
+      entry.approval = approval;
+    }
     entry.updatedAt = now;
   }
 
   entry.message = buildToolStreamMessage(entry);
+  if (approval && Array.isArray(host.execApprovalQueue)) {
+    host.execApprovalQueue = addExecApproval(host.execApprovalQueue, {
+      id: approval.approvalId,
+      kind: "exec",
+      request: {
+        command: approval.command,
+        cwd: approval.cwd ?? null,
+        host: approval.host,
+        sessionKey: sessionKey ?? host.sessionKey,
+      },
+      createdAtMs: typeof payload.ts === "number" ? payload.ts : now,
+      expiresAtMs: approval.expiresAtMs ?? now + 60_000,
+    });
+  }
   trimToolStream(host);
   scheduleToolStreamSync(host, phase === "result");
 }

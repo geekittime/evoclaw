@@ -12,6 +12,7 @@ export type ExecApprovalRequestPayload = {
 export type ExecApprovalRequest = {
   id: string;
   kind: "exec" | "plugin";
+  source?: "native" | "assistant-fallback";
   request: ExecApprovalRequestPayload;
   pluginTitle?: string;
   pluginDescription?: string | null;

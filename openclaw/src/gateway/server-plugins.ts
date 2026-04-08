@@ -278,6 +278,7 @@ async function dispatchGatewayMethod<T>(
         scopes: options?.syntheticScopes,
       }),
     isWebchatConnect,
+    extraHandlers: scope?.extraHandlers,
     respond: (ok, payload, error) => {
       if (!result) {
         result = { ok, payload, error };

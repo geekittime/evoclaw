@@ -112,6 +112,51 @@ function appendUniqueSuffix(base: string, suffix: string): string {
   return base + suffix;
 }
 
+function extractApprovalResultForToolEvent(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const outer = value as Record<string, unknown>;
+  const details =
+    outer.details && typeof outer.details === "object" && !Array.isArray(outer.details)
+      ? (outer.details as Record<string, unknown>)
+      : outer;
+
+  const status =
+    details.status === "approval-pending" || details.status === "approval-unavailable"
+      ? details.status
+      : null;
+  if (!status) {
+    return undefined;
+  }
+
+  const picked: Record<string, unknown> = { status };
+  const copyIfPresent = (key: string) => {
+    if (key in details && details[key] !== undefined) {
+      picked[key] = details[key];
+    }
+  };
+
+  if (status === "approval-pending") {
+    copyIfPresent("approvalId");
+    copyIfPresent("approvalSlug");
+    copyIfPresent("expiresAtMs");
+    copyIfPresent("allowedDecisions");
+    copyIfPresent("host");
+    copyIfPresent("command");
+    copyIfPresent("cwd");
+    copyIfPresent("nodeId");
+    copyIfPresent("warningText");
+  } else {
+    copyIfPresent("reason");
+    copyIfPresent("warningText");
+    copyIfPresent("channelLabel");
+    copyIfPresent("sentApproverDms");
+  }
+
+  return { details: picked };
+}
+
 function resolveMergedAssistantText(params: {
   previousText: string;
   nextText: string;
@@ -736,7 +781,12 @@ export function createAgentEventHandler({
       isToolEvent && toolVerbose !== "full"
         ? (() => {
             const data = evt.data ? { ...evt.data } : {};
-            delete data.result;
+            const preservedResult = extractApprovalResultForToolEvent(data.result);
+            if (preservedResult) {
+              data.result = preservedResult;
+            } else {
+              delete data.result;
+            }
             delete data.partialResult;
             return sessionKey
               ? { ...eventForClients, sessionKey, data }

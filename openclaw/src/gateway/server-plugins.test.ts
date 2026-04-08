@@ -401,6 +401,38 @@ describe("loadGatewayPlugins", () => {
     });
   });
 
+  test("forwards request-scoped extra handlers for subagent dispatch", async () => {
+    const serverPlugins = serverPluginsModule;
+    const runtime = await createSubagentRuntime(serverPlugins);
+    const scopedExtraHandlers = {
+      "agent.custom": vi.fn(),
+    };
+    const scope = {
+      context: createTestContext("request-scope-extra-handlers"),
+      client: {
+        connect: {
+          scopes: ["operator.admin"],
+        },
+      } as GatewayRequestOptions["client"],
+      isWebchatConnect: () => false,
+      extraHandlers: scopedExtraHandlers,
+    } satisfies PluginRuntimeGatewayRequestScope;
+
+    await gatewayRequestScopeModule.withPluginRuntimeGatewayRequestScope(scope, () =>
+      runtime.run({
+        sessionKey: "s-extra-handlers",
+        message: "use current request-scoped handlers",
+        deliver: false,
+      }),
+    );
+
+    expect(handleGatewayRequest).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        extraHandlers: scopedExtraHandlers,
+      }),
+    );
+  });
+
   test("rejects provider/model overrides for fallback runs without explicit authorization", async () => {
     const serverPlugins = serverPluginsModule;
     const runtime = await createSubagentRuntime(serverPlugins);
