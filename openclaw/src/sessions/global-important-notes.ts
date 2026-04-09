@@ -23,6 +23,14 @@ function clampTail(value: string, maxChars: number): string {
   return value.slice(value.length - maxChars);
 }
 
+function normalizeSummaryLines(value: string): string[] {
+  return value
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .map((line) => line.replace(/^[-*•\d.)\s]+/u, "").trim())
+    .filter(Boolean);
+}
+
 export function resolveGlobalImportantNotesPath(env: NodeJS.ProcessEnv = process.env): string {
   return path.join(resolveStateDir(env), "prompt-context", GLOBAL_IMPORTANT_NOTES_FILENAME);
 }
@@ -121,14 +129,22 @@ export function appendGlobalImportantNote(params: {
   if (!summary) {
     return current;
   }
+  const nextLines = normalizeSummaryLines(summary);
+  if (nextLines.length === 0) {
+    return current;
+  }
   const currentLines = (current.content ?? "")
     .split(/\r?\n/u)
     .map((line) => line.trim())
     .filter(Boolean);
-  const alreadyPresent = currentLines.some((line) => line === `- ${summary}` || line === summary);
-  const nextContent = alreadyPresent
-    ? current.content ?? summary
-    : [current.content, `- ${summary}`].filter(Boolean).join("\n");
+  const mergedLines = [...currentLines];
+  for (const line of nextLines) {
+    const alreadyPresent = mergedLines.some((currentLine) => currentLine === `- ${line}` || currentLine === line);
+    if (!alreadyPresent) {
+      mergedLines.push(`- ${line}`);
+    }
+  }
+  const nextContent = mergedLines.join("\n");
   const next = {
     content: clampTail(nextContent, MAX_GLOBAL_IMPORTANT_NOTES_CHARS),
     updatedAt: params.updatedAt ?? Date.now(),

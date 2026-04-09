@@ -47,13 +47,15 @@ describe("global important notes", () => {
     appendGlobalImportantNote({
       env,
       seedFromLegacyNotes: "Keep replies concise.",
-      summary: "Start with a short greeting when the user says hi.",
+      summary:
+        "Start with a short greeting when the user says hi.\nAvoid skipping the exact command before deletion.",
       updatedAt: 123,
     });
 
     const loaded = loadGlobalImportantNotes({ env });
     expect(loaded.content).toContain("Keep replies concise.");
     expect(loaded.content).toContain("Start with a short greeting");
+    expect(loaded.content).toContain("Avoid skipping the exact command before deletion.");
 
     const prompt = buildGlobalImportantNotesPromptAddition({ env });
     expect(prompt).toContain("## Important Notes (High Priority)");

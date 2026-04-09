@@ -146,29 +146,37 @@ export async function summarizeFeedbackIntoImportantNote(params: {
   feedback: string;
 }): Promise<string> {
   const feedback = trimText(params.feedback) ?? "";
-  const fallback =
+  const fallbackLines =
     params.rating === "good"
-      ? `User liked this answer style. Keep: ${(feedback || params.responseText).slice(0, 300)}`
-      : `User disliked this answer. Improve: ${(feedback || params.responseText).slice(0, 300)}`;
+      ? [
+          `Preserve this preference in future answers: ${(feedback || params.responseText).slice(0, 240)}`,
+        ]
+      : [
+          `Avoid repeating this issue in future answers: ${(feedback || params.responseText).slice(0, 240)}`,
+        ];
+  const fallback = fallbackLines.join("\n");
   try {
     return await callDeepSeekSummary({
       system:
         [
           "You maintain a persistent IMPORTANT-NOTES memory for future prompts.",
-          "Convert the feedback into one short durable instruction for the assistant.",
-          "Capture only stable preferences, corrections, constraints, or recurring pitfalls that should influence future answers.",
-          "Do not include transient task details, file paths, timestamps, or narration about this specific turn unless they reflect a durable rule.",
+          "Analyze the user question, the assistant answer, the good/bad rating, and the user's written feedback together.",
+          "Extract durable lessons for future prompts: user preferences, style expectations, corrections, constraints, and things the assistant should pay attention to.",
+          "Keep only stable guidance that can generalize across future turns.",
+          "Do not include transient task details, file paths, timestamps, or one-off narration unless they imply a durable rule.",
           "Prefer imperative guidance such as 'Start with ...', 'Avoid ...', 'Always ...', or 'When ..., ...'.",
-          "Return exactly one plain-text line with no markdown bullets, no numbering, and no extra commentary.",
+          "Return 1 to 3 short plain-text lines, one durable note per line.",
+          "Do not use markdown bullets, numbering, headings, or extra commentary.",
         ].join(" "),
       user: [
         `User question:\n${params.instructionText || "(none)"}`,
         `Assistant answer:\n${params.responseText || "(none)"}`,
         `Feedback rating: ${params.rating}`,
         `Feedback details:\n${feedback || "(empty)"}`,
-        "Write one durable important-note for future prompts.",
+        "Summarize the durable experience from this interaction for IMPORTANT-NOTES.",
+        "Focus on user preferences and things the assistant should pay attention to in future replies.",
       ].join("\n\n"),
-      maxTokens: 180,
+      maxTokens: 260,
     });
   } catch (error) {
     log.warn(`feedback summary fallback: ${error instanceof Error ? error.message : String(error)}`);
