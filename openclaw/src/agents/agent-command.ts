@@ -774,6 +774,23 @@ async function agentCommandInternal(
     ]
       .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
       .join("\n\n");
+    const runPromptBodyContext = [
+      buildGlobalImportantNotesPromptAddition({
+        seedFromLegacyNotes: sessionEntry?.promptContext?.importantNotes,
+      }),
+      buildSessionPromptContextAddition(sessionEntry),
+    ]
+      .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+      .join("\n\n");
+    const runBody =
+      runPromptBodyContext.length > 0
+        ? [
+            "## Runtime Guidance For This Turn",
+            "Read and follow these notes and enabled skills before responding.",
+            runPromptBodyContext,
+            body,
+          ].join("\n\n")
+        : body;
 
     const startedAt = Date.now();
     let lifecycleEnded = false;
@@ -819,7 +836,7 @@ async function agentCommandInternal(
             sessionAgentId,
             sessionFile,
             workspaceDir,
-            body,
+            body: runBody,
             isFallbackRetry,
             resolvedThinkLevel,
             timeoutMs,

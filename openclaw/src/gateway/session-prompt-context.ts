@@ -153,13 +153,20 @@ export async function summarizeFeedbackIntoImportantNote(params: {
   try {
     return await callDeepSeekSummary({
       system:
-        "You summarize answer feedback into durable prompt notes. Return one concise bullet-style line without markdown bullets. Focus on stable preferences, corrections, or constraints that should affect future answers.",
+        [
+          "You maintain a persistent IMPORTANT-NOTES memory for future prompts.",
+          "Convert the feedback into one short durable instruction for the assistant.",
+          "Capture only stable preferences, corrections, constraints, or recurring pitfalls that should influence future answers.",
+          "Do not include transient task details, file paths, timestamps, or narration about this specific turn unless they reflect a durable rule.",
+          "Prefer imperative guidance such as 'Start with ...', 'Avoid ...', 'Always ...', or 'When ..., ...'.",
+          "Return exactly one plain-text line with no markdown bullets, no numbering, and no extra commentary.",
+        ].join(" "),
       user: [
         `User question:\n${params.instructionText || "(none)"}`,
         `Assistant answer:\n${params.responseText || "(none)"}`,
         `Feedback rating: ${params.rating}`,
         `Feedback details:\n${feedback || "(empty)"}`,
-        "Write one short durable note for future prompts.",
+        "Write one durable important-note for future prompts.",
       ].join("\n\n"),
       maxTokens: 180,
     });

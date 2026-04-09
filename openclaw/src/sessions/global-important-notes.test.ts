@@ -56,7 +56,8 @@ describe("global important notes", () => {
     expect(loaded.content).toContain("Start with a short greeting");
 
     const prompt = buildGlobalImportantNotesPromptAddition({ env });
-    expect(prompt).toContain("## Important Notes");
+    expect(prompt).toContain("## Important Notes (High Priority)");
+    expect(prompt).toContain("You MUST read and follow them on every turn");
     expect(prompt).toContain("Start with a short greeting");
   });
 

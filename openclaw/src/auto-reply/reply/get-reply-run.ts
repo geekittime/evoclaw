@@ -479,6 +479,9 @@ export async function runPreparedReply(
   if (promptContextAddition) {
     extraSystemPromptParts.push(promptContextAddition);
   }
+  const promptBodyContextAddition = [globalImportantNotesAddition, promptContextAddition]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .join("\n\n");
   const prefixedBody = [threadContextNote, prefixedBodyBase].filter(Boolean).join("\n\n");
   const mediaNote = buildInboundMediaNote(ctx);
   const mediaReplyHint = mediaNote
@@ -487,6 +490,16 @@ export async function runPreparedReply(
   let prefixedCommandBody = mediaNote
     ? [mediaNote, mediaReplyHint, prefixedBody ?? ""].filter(Boolean).join("\n").trim()
     : prefixedBody;
+  if (promptBodyContextAddition) {
+    prefixedCommandBody = [
+      "## Runtime Guidance For This Turn",
+      "Read and follow these notes and enabled skills before answering the user.",
+      promptBodyContextAddition,
+      prefixedCommandBody,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+  }
   if (!resolvedThinkLevel) {
     resolvedThinkLevel = await modelState.resolveDefaultThinkingLevel();
   }

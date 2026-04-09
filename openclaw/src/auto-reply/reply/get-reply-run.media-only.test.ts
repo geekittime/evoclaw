@@ -246,15 +246,8 @@ describe("runPreparedReply media-only handling", () => {
     process.env.OPENCLAW_STATE_DIR = stateDir;
     fs.mkdirSync(path.join(stateDir, "prompt-context"), { recursive: true });
     fs.writeFileSync(
-      path.join(stateDir, "prompt-context", "important-notes.json"),
-      JSON.stringify(
-        {
-          content: "- Start with a concise greeting when the user says hi.\n- Prefer showing the exact command before deletion.",
-          updatedAt: 1,
-        },
-        null,
-        2,
-      ),
+      path.join(stateDir, "prompt-context", "important-notes.md"),
+      "- Start with a concise greeting when the user says hi.\n- Prefer showing the exact command before deletion.\n",
       "utf8",
     );
 
@@ -281,11 +274,24 @@ describe("runPreparedReply media-only handling", () => {
     );
 
     const call = vi.mocked(runReplyAgent).mock.calls.at(-1)?.[0];
-    expect(call?.followupRun.run.extraSystemPrompt ?? "").toContain("## Important Notes");
+    expect(call?.commandBody ?? "").toContain("## Runtime Guidance For This Turn");
+    expect(call?.commandBody ?? "").toContain("## Important Notes (High Priority)");
+    expect(call?.commandBody ?? "").toContain(
+      "Start with a concise greeting when the user says hi.",
+    );
+    expect(call?.commandBody ?? "").toContain("## Enabled Session Skills");
+    expect(call?.commandBody ?? "").toContain("security-triage, session-rules");
+    expect(call?.followupRun.run.extraSystemPrompt ?? "").toContain("## Important Notes (High Priority)");
+    expect(call?.followupRun.run.extraSystemPrompt ?? "").toContain(
+      "You MUST read and follow them on every turn",
+    );
     expect(call?.followupRun.run.extraSystemPrompt ?? "").toContain(
       "Start with a concise greeting when the user says hi.",
     );
     expect(call?.followupRun.run.extraSystemPrompt ?? "").toContain("## Enabled Session Skills");
+    expect(call?.followupRun.run.extraSystemPrompt ?? "").toContain(
+      "You should actively apply them while planning, tool use, and answering.",
+    );
     expect(call?.followupRun.run.extraSystemPrompt ?? "").toContain(
       "security-triage, session-rules",
     );

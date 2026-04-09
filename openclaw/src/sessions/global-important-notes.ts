@@ -142,5 +142,15 @@ export function buildGlobalImportantNotesPromptAddition(params?: {
   seedFromLegacyNotes?: string | undefined;
 }): string | undefined {
   const content = loadGlobalImportantNotes(params).content;
-  return content ? `## Important Notes\n${content}` : undefined;
+  if (!content) {
+    return undefined;
+  }
+  return [
+    "## Important Notes (High Priority)",
+    "These notes are durable operator guidance distilled from prior feedback across all sessions.",
+    "You MUST read and follow them on every turn unless they directly conflict with higher-priority system or developer instructions.",
+    "Treat them as persistent preferences, constraints, and lessons learned. Pay close attention before responding.",
+    "",
+    content,
+  ].join("\n");
 }

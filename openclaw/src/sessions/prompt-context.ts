@@ -144,13 +144,19 @@ export function buildSessionPromptContextAddition(
   const sections: string[] = [];
   if (selectedSkillNames.length > 0) {
     sections.push(
-      `## Enabled Session Skills\nThe operator explicitly enabled these skills for this session: ${selectedSkillNames.join(", ")}.`,
+      [
+        "## Enabled Session Skills",
+        "The operator explicitly enabled these skills for this session.",
+        "You should actively apply them while planning, tool use, and answering.",
+        `Enabled skills: ${selectedSkillNames.join(", ")}.`,
+      ].join("\n"),
     );
   }
   if (selectedCustomSkills.length > 0) {
     sections.push(
       [
         "## Session Custom Skills",
+        "These custom skills were added by the operator for this session and should be treated as active guidance.",
         ...selectedCustomSkills.map((skill) => `### ${skill.name}\n${skill.content}`),
       ].join("\n\n"),
     );

@@ -77,8 +77,10 @@ describe("session prompt context helpers", () => {
     });
 
     expect(prompt).toContain("## Enabled Session Skills");
+    expect(prompt).toContain("You should actively apply them while planning, tool use, and answering.");
     expect(prompt).toContain("security-triage, code-review");
     expect(prompt).toContain("## Session Custom Skills");
+    expect(prompt).toContain("should be treated as active guidance");
     expect(prompt).toContain("Always explain risks before deleting files.");
     expect(prompt).toContain("## Conversation Summary");
     expect(prompt).toContain("fixed the build");

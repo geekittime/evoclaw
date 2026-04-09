@@ -132,6 +132,19 @@ describe("buildAgentSystemPrompt", () => {
     expect(prompt).toContain("Subagent details");
   });
 
+  it("uses a neutral runtime-context header for extra system prompt in normal mode", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      promptMode: "default",
+      extraSystemPrompt: "## Important Notes (High Priority)\nAlways greet first.",
+    });
+
+    expect(prompt).toContain("## Additional Runtime Context");
+    expect(prompt).not.toContain("## Group Chat Context");
+    expect(prompt).toContain("## Important Notes (High Priority)");
+    expect(prompt).toContain("Always greet first.");
+  });
+
   it("includes skills in minimal prompt mode when skillsPrompt is provided (cron regression)", () => {
     // Isolated cron sessions use promptMode="minimal" but must still receive skills.
     const skillsPrompt =
