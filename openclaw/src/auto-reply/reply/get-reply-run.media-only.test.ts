@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../agents/auth-profiles/session-override.js", () => ({
   resolveSessionAuthProfileOverride: vi.fn().mockResolvedValue(undefined),
@@ -99,6 +102,7 @@ let runReplyAgent: typeof import("./agent-runner.runtime.js").runReplyAgent;
 let routeReply: typeof import("./route-reply.runtime.js").routeReply;
 let drainFormattedSystemEvents: typeof import("./session-system-events.js").drainFormattedSystemEvents;
 let resolveTypingMode: typeof import("./typing-mode.js").resolveTypingMode;
+const tempStateDirs: string[] = [];
 
 async function loadFreshGetReplyRunModuleForTest() {
   vi.resetModules();
@@ -185,12 +189,25 @@ function baseParams(
   };
 }
 
+function createTempStateDir() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-global-notes-"));
+  tempStateDirs.push(dir);
+  return dir;
+}
+
 describe("runPreparedReply media-only handling", () => {
   beforeEach(async () => {
     storeRuntimeLoads.mockClear();
     updateSessionStore.mockReset();
     vi.clearAllMocks();
     await loadFreshGetReplyRunModuleForTest();
+  });
+
+  afterEach(() => {
+    delete process.env.OPENCLAW_STATE_DIR;
+    for (const dir of tempStateDirs.splice(0, tempStateDirs.length)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("does not load session store runtime on module import", async () => {
@@ -222,6 +239,64 @@ describe("runPreparedReply media-only handling", () => {
     expect(call).toBeTruthy();
     expect(call?.followupRun.prompt).toContain("[Thread history - for context]");
     expect(call?.followupRun.prompt).toContain("Earlier message in this thread");
+  });
+
+  it("injects global important notes and selected session skills into the extra system prompt", async () => {
+    const stateDir = createTempStateDir();
+    process.env.OPENCLAW_STATE_DIR = stateDir;
+    fs.mkdirSync(path.join(stateDir, "prompt-context"), { recursive: true });
+    fs.writeFileSync(
+      path.join(stateDir, "prompt-context", "important-notes.json"),
+      JSON.stringify(
+        {
+          content: "- Start with a concise greeting when the user says hi.\n- Prefer showing the exact command before deletion.",
+          updatedAt: 1,
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    await runPreparedReply(
+      baseParams({
+        sessionEntry: {
+          sessionId: "session-key",
+          updatedAt: 1,
+          promptContext: {
+            selectedSkillNames: ["security-triage", "session-rules"],
+            selectionCustomized: true,
+            contextSummary: "We already inspected the repo and confirmed the target files.",
+            customSkills: [
+              {
+                name: "session-rules",
+                content: "Always explain destructive side effects before running rm.",
+                createdAt: 1,
+                updatedAt: 1,
+              },
+            ],
+          },
+        } as never,
+      }),
+    );
+
+    const call = vi.mocked(runReplyAgent).mock.calls.at(-1)?.[0];
+    expect(call?.followupRun.run.extraSystemPrompt ?? "").toContain("## Important Notes");
+    expect(call?.followupRun.run.extraSystemPrompt ?? "").toContain(
+      "Start with a concise greeting when the user says hi.",
+    );
+    expect(call?.followupRun.run.extraSystemPrompt ?? "").toContain("## Enabled Session Skills");
+    expect(call?.followupRun.run.extraSystemPrompt ?? "").toContain(
+      "security-triage, session-rules",
+    );
+    expect(call?.followupRun.run.extraSystemPrompt ?? "").toContain("## Session Custom Skills");
+    expect(call?.followupRun.run.extraSystemPrompt ?? "").toContain(
+      "Always explain destructive side effects before running rm.",
+    );
+    expect(call?.followupRun.run.extraSystemPrompt ?? "").toContain("## Conversation Summary");
+    expect(call?.followupRun.run.extraSystemPrompt ?? "").toContain(
+      "We already inspected the repo and confirmed the target files.",
+    );
   });
 
   it("returns the empty-body reply when there is no text and no media", async () => {

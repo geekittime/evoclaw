@@ -274,6 +274,7 @@ function createMetaclawProps(
     onAddWhitelistEntry: () => undefined,
     onRemoveWhitelistEntry: () => undefined,
     onSaveSkillSelection: () => undefined,
+    onAddSkill: async () => undefined,
     onSubmitFeedback: async () => ({
       ok: true,
       session_id: "main",
@@ -1551,6 +1552,75 @@ exec_command: rm -rf new`,
 
       expect(container.textContent).toContain("Compressed History");
       expect(container.textContent).toContain("Compressed summary of the chat so far.");
+    } finally {
+      cleanupChatModuleState();
+    }
+  });
+
+  it("adds a custom skill from Session Studio and shows a success message", async () => {
+    const container = document.createElement("div");
+    cleanupChatModuleState();
+    try {
+      const onAddSkill = vi.fn(async () => undefined);
+      const props = createProps({
+        metaclaw: createMetaclawProps({
+          onAddSkill,
+          selectedSkillNames: [],
+          selectionCustomized: false,
+          latestInjectedSkills: [],
+        }),
+      });
+
+      const rerender = () => {
+        render(
+          renderChat({
+            ...props,
+            onRequestUpdate: rerender,
+          }),
+          container,
+        );
+      };
+
+      rerender();
+
+      const openButton = Array.from(container.querySelectorAll("button")).find((button) =>
+        button.textContent?.includes("Show Session Studio"),
+      );
+      openButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flushTasks();
+
+      const inputs = Array.from(container.querySelectorAll("input"));
+      const skillNameInput = inputs.find((input) => input.getAttribute("placeholder") === "Skill name");
+      expect(skillNameInput).toBeTruthy();
+      if (skillNameInput) {
+        skillNameInput.value = "my-session-skill";
+        skillNameInput.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      await flushTasks();
+
+      const textareas = Array.from(container.querySelectorAll("textarea"));
+      const skillContentTextarea = textareas.find((textarea) =>
+        textarea.getAttribute("placeholder") === "Skill content",
+      );
+      expect(skillContentTextarea).toBeTruthy();
+      if (skillContentTextarea) {
+        skillContentTextarea.value = "Always summarize first, then act.";
+        skillContentTextarea.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      await flushTasks();
+
+      const addSkillButton = Array.from(container.querySelectorAll("button")).find((button) =>
+        button.textContent?.includes("Add Skill"),
+      );
+      expect(addSkillButton).toBeTruthy();
+      addSkillButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flushTasks();
+
+      expect(onAddSkill).toHaveBeenCalledWith(
+        "my-session-skill",
+        "Always summarize first, then act.",
+      );
+      expect(container.textContent).toContain("Skill added successfully.");
     } finally {
       cleanupChatModuleState();
     }

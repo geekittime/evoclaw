@@ -36,9 +36,8 @@ describe("session prompt context helpers", () => {
 
     expect(next.feedbackRecords).toHaveLength(2);
     expect(next.feedbackRecords?.at(-1)?.feedback).toBe("Answer should greet first.");
-    expect(next.importantNotes).toContain("Existing preference");
-    expect(next.importantNotes).toContain("Start with a brief greeting");
-    expect(next.importantNotesUpdatedAt).toBe(2);
+    expect(next.importantNotes).toBe("Existing preference");
+    expect(next.importantNotesUpdatedAt).toBeUndefined();
   });
 
   it("records skill selections and preserves customization state", () => {
@@ -64,13 +63,23 @@ describe("session prompt context helpers", () => {
   it("builds the injected prompt addition from notes and compressed history", () => {
     const prompt = buildSessionPromptContextAddition({
       promptContext: {
-        importantNotes: "Keep replies concise.",
+        selectedSkillNames: ["security-triage", "code-review", "session-rules"],
         contextSummary: "We already inspected the repo and fixed the build.",
+        customSkills: [
+          {
+            name: "session-rules",
+            content: "Always explain risks before deleting files.",
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
       },
     });
 
-    expect(prompt).toContain("## Important Notes");
-    expect(prompt).toContain("Keep replies concise.");
+    expect(prompt).toContain("## Enabled Session Skills");
+    expect(prompt).toContain("security-triage, code-review");
+    expect(prompt).toContain("## Session Custom Skills");
+    expect(prompt).toContain("Always explain risks before deleting files.");
     expect(prompt).toContain("## Conversation Summary");
     expect(prompt).toContain("fixed the build");
   });

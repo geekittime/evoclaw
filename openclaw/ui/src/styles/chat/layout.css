@@ -851,6 +851,12 @@
   letter-spacing: 0.02em;
 }
 
+.metaclaw-list-block__sub {
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+
 .metaclaw-skill {
   display: flex;
   align-items: flex-start;
@@ -868,6 +874,15 @@
   overflow-y: auto;
   padding-right: 6px;
   scrollbar-width: thin;
+}
+
+.metaclaw-inline-form--stack {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.metaclaw-skill-composer__content {
+  min-height: 150px;
 }
 
 .metaclaw-skill-list--scrollable::-webkit-scrollbar {

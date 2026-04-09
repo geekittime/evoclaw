@@ -9,12 +9,23 @@ const resolveFreshestSessionEntryFromStoreKeysMock = vi.fn();
 const readSessionMessagesMock = vi.fn();
 const summarizeConversationHistoryMock = vi.fn();
 const summarizeFeedbackIntoImportantNoteMock = vi.fn();
+const loadGlobalImportantNotesMock = vi.fn();
+const appendGlobalImportantNoteMock = vi.fn();
+const loadWorkspaceSkillEntriesMock = vi.fn();
 
 vi.mock("../../config/config.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../config/config.js")>();
   return {
     ...actual,
     loadConfig: () => ({}),
+  };
+});
+
+vi.mock("../../agents/skills.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../agents/skills.js")>();
+  return {
+    ...actual,
+    loadWorkspaceSkillEntries: (...args: unknown[]) => loadWorkspaceSkillEntriesMock(...args),
   };
 });
 
@@ -49,6 +60,15 @@ vi.mock("../session-prompt-context.js", async (importOriginal) => {
   };
 });
 
+vi.mock("../../sessions/global-important-notes.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../sessions/global-important-notes.js")>();
+  return {
+    ...actual,
+    loadGlobalImportantNotes: (...args: unknown[]) => loadGlobalImportantNotesMock(...args),
+    appendGlobalImportantNote: (...args: unknown[]) => appendGlobalImportantNoteMock(...args),
+  };
+});
+
 import { sessionsHandlers } from "./sessions.js";
 
 describe("sessions.promptContext handlers", () => {
@@ -72,6 +92,9 @@ describe("sessions.promptContext handlers", () => {
     readSessionMessagesMock.mockReset();
     summarizeConversationHistoryMock.mockReset();
     summarizeFeedbackIntoImportantNoteMock.mockReset();
+    loadGlobalImportantNotesMock.mockReset();
+    appendGlobalImportantNoteMock.mockReset();
+    loadWorkspaceSkillEntriesMock.mockReset();
 
     resolveGatewaySessionStoreTargetMock.mockReturnValue({
       canonicalKey: "agent:main:main",
@@ -96,9 +119,22 @@ describe("sessions.promptContext handlers", () => {
       { role: "user", content: "from transcript user" },
       { role: "assistant", content: "from transcript assistant" },
     ]);
+    loadGlobalImportantNotesMock.mockImplementation(
+      ({ seedFromLegacyNotes }: { seedFromLegacyNotes?: string } = {}) => ({
+        content: seedFromLegacyNotes ?? "Existing durable note",
+        updatedAt: 1,
+      }),
+    );
+    appendGlobalImportantNoteMock.mockImplementation(
+      ({ summary }: { summary: string }) => ({
+        content: `Existing durable note\n- ${summary}`,
+        updatedAt: 2,
+      }),
+    );
+    loadWorkspaceSkillEntriesMock.mockReturnValue([]);
   });
 
-  it("stores feedback summaries into important notes and feedback records", async () => {
+  it("stores feedback summaries into global important notes and session feedback records", async () => {
     summarizeFeedbackIntoImportantNoteMock.mockResolvedValue(
       "Start with a brief greeting when the user says hi.",
     );
@@ -128,8 +164,11 @@ describe("sessions.promptContext handlers", () => {
       rating: "bad",
       feedback: "Needs to greet first.",
     });
-    expect(sessionEntry.promptContext?.importantNotes).toContain("Existing durable note");
-    expect(sessionEntry.promptContext?.importantNotes).toContain("brief greeting");
+    expect(appendGlobalImportantNoteMock).toHaveBeenCalledWith({
+      summary: "Start with a brief greeting when the user says hi.",
+      updatedAt: expect.any(Number),
+      seedFromLegacyNotes: "Existing durable note",
+    });
     expect(sessionEntry.promptContext?.feedbackRecords).toHaveLength(1);
     expect(sessionEntry.promptContext?.feedbackRecords?.[0]?.instructionText).toBe("hi");
     expect(respond).toHaveBeenCalledWith(
@@ -212,6 +251,50 @@ describe("sessions.promptContext handlers", () => {
             content: expect.stringContaining("Goal: clean temp0."),
           }),
         }),
+      }),
+      undefined,
+    );
+  });
+
+  it("stores a custom session skill and auto-selects it for prompt injection", async () => {
+    const respond = vi.fn() as unknown as RespondFn;
+    const context = {
+      broadcastToConnIds: vi.fn(),
+      getSessionEventSubscriberConnIds: () => new Set<string>(),
+    } as unknown as GatewayRequestContext;
+
+    await sessionsHandlers["sessions.promptContext.skills.add"]({
+      params: {
+        key: "agent:main:main",
+        name: "my-session-skill",
+        content: "Always summarize first, then act.",
+      },
+      respond,
+      context,
+    } as never);
+
+    expect(sessionEntry.promptContext?.customSkills).toEqual([
+      expect.objectContaining({
+        name: "my-session-skill",
+        content: "Always summarize first, then act.",
+      }),
+    ]);
+    expect(sessionEntry.promptContext?.selectedSkillNames).toEqual([
+      "security-triage",
+      "my-session-skill",
+    ]);
+    expect(respond).toHaveBeenCalledWith(
+      true,
+      expect.objectContaining({
+        ok: true,
+        customSkills: expect.arrayContaining([
+          expect.objectContaining({
+            name: "my-session-skill",
+            content: "Always summarize first, then act.",
+          }),
+        ]),
+        selectedSkillNames: expect.arrayContaining(["my-session-skill"]),
+        latestInjectedSkills: expect.arrayContaining(["my-session-skill"]),
       }),
       undefined,
     );

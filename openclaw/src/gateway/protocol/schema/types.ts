@@ -51,6 +51,7 @@ export type SessionsResetParams = SchemaType<"SessionsResetParams">;
 export type SessionsDeleteParams = SchemaType<"SessionsDeleteParams">;
 export type SessionsCompactParams = SchemaType<"SessionsCompactParams">;
 export type SessionsPromptContextGetParams = SchemaType<"SessionsPromptContextGetParams">;
+export type SessionsPromptContextSkillsAddParams = SchemaType<"SessionsPromptContextSkillsAddParams">;
 export type SessionsPromptContextSkillsSetParams = SchemaType<"SessionsPromptContextSkillsSetParams">;
 export type SessionsPromptContextFeedbackParams = SchemaType<"SessionsPromptContextFeedbackParams">;
 export type SessionsPromptContextCompactParams = SchemaType<"SessionsPromptContextCompactParams">;

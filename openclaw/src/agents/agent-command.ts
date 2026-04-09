@@ -89,6 +89,7 @@ import {
   resolveSessionSelectedSkillNames,
   shouldAutoRefreshContextSummary,
 } from "../sessions/prompt-context.js";
+import { buildGlobalImportantNotesPromptAddition } from "../sessions/global-important-notes.js";
 import { summarizeConversationHistory } from "../gateway/session-prompt-context.js";
 import { readSessionMessages } from "../gateway/session-utils.js";
 
@@ -766,6 +767,9 @@ async function agentCommandInternal(
     }
     const runExtraSystemPrompt = [
       opts.extraSystemPrompt,
+      buildGlobalImportantNotesPromptAddition({
+        seedFromLegacyNotes: sessionEntry?.promptContext?.importantNotes,
+      }),
       buildSessionPromptContextAddition(sessionEntry),
     ]
       .filter((value): value is string => typeof value === "string" && value.trim().length > 0)

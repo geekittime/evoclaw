@@ -19,6 +19,7 @@ import {
   resolveSessionSelectedSkillNames,
   shouldAutoRefreshContextSummary,
 } from "../../sessions/prompt-context.js";
+import { buildGlobalImportantNotesPromptAddition } from "../../sessions/global-important-notes.js";
 import { isReasoningTagProvider } from "../../utils/provider-utils.js";
 import { hasControlCommand } from "../command-detection.js";
 import { resolveEnvelopeFormatOptions } from "../envelope.js";
@@ -469,6 +470,12 @@ export async function runPreparedReply(
     });
   }
   const promptContextAddition = buildSessionPromptContextAddition(sessionEntry);
+  const globalImportantNotesAddition = buildGlobalImportantNotesPromptAddition({
+    seedFromLegacyNotes: sessionEntry?.promptContext?.importantNotes,
+  });
+  if (globalImportantNotesAddition) {
+    extraSystemPromptParts.push(globalImportantNotesAddition);
+  }
   if (promptContextAddition) {
     extraSystemPromptParts.push(promptContextAddition);
   }

@@ -7,7 +7,6 @@ import type {
 import { matchesSkillFilter, normalizeSkillFilter } from "../agents/skills/filter.js";
 
 export const SESSION_CONTEXT_SUMMARY_TOKEN_THRESHOLD = 200_000;
-const MAX_IMPORTANT_NOTES_CHARS = 12_000;
 const MAX_CONTEXT_SUMMARY_CHARS = 16_000;
 const MAX_SESSION_FEEDBACK_RECORDS = 48;
 const MAX_SKILL_SELECTION_HISTORY = 32;
@@ -141,7 +140,6 @@ export function buildSessionPromptContextAddition(
 ): string | undefined {
   const selectedSkillNames = resolveSessionSelectedSkillNames(entry) ?? [];
   const selectedCustomSkills = resolveSelectedSessionCustomSkills(entry);
-  const importantNotes = trimOptionalText(entry?.promptContext?.importantNotes);
   const contextSummary = trimOptionalText(entry?.promptContext?.contextSummary);
   const sections: string[] = [];
   if (selectedSkillNames.length > 0) {
@@ -156,9 +154,6 @@ export function buildSessionPromptContextAddition(
         ...selectedCustomSkills.map((skill) => `### ${skill.name}\n${skill.content}`),
       ].join("\n\n"),
     );
-  }
-  if (importantNotes) {
-    sections.push(`## Important Notes\n${importantNotes}`);
   }
   if (contextSummary) {
     sections.push(`## Conversation Summary\n${contextSummary}`);
@@ -181,22 +176,15 @@ export function buildUpdatedPromptContextFromFeedback(params: {
   record: SessionFeedbackRecord;
   noteSummary?: string;
 }): SessionPromptContext {
-  const now = params.record.createdAt;
+  void params.noteSummary;
   const nextFeedbackRecords = [
     ...(params.current?.feedbackRecords ?? []),
     params.record,
   ].slice(-MAX_SESSION_FEEDBACK_RECORDS);
-  const noteSummary = trimOptionalText(params.noteSummary);
-  const existingNotes = trimOptionalText(params.current?.importantNotes);
-  const importantNotes =
-    noteSummary && existingNotes ? `${existingNotes}\n- ${noteSummary}` : noteSummary ?? existingNotes;
 
   return {
     ...params.current,
     feedbackRecords: nextFeedbackRecords,
-    importantNotes: importantNotes ? clampTail(importantNotes, MAX_IMPORTANT_NOTES_CHARS) : undefined,
-    importantNotesUpdatedAt:
-      importantNotes || params.current?.importantNotesUpdatedAt ? now : params.current?.importantNotesUpdatedAt,
   };
 }
 

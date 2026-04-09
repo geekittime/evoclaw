@@ -70,6 +70,10 @@ import {
   resolveSessionCustomSkills,
 } from "../../sessions/prompt-context.js";
 import {
+  appendGlobalImportantNote,
+  loadGlobalImportantNotes,
+} from "../../sessions/global-important-notes.js";
+import {
   archiveSessionTranscriptsForSession,
   cleanupSessionBeforeMutation,
   emitSessionUnboundLifecycleEvent,
@@ -111,6 +115,9 @@ function buildPromptContextResponse(params: {
   availableSkills?: Array<{ name: string; description: string; category?: string }>;
 }) {
   const promptContext = getSessionPromptContext(params.entry);
+  const globalImportantNotes = loadGlobalImportantNotes({
+    seedFromLegacyNotes: promptContext?.importantNotes,
+  });
   const customSkills = resolveSessionCustomSkills(params.entry);
   const selectedSkillNames = promptContext?.selectedSkillNames ?? [];
   const latestInjectedSkills = Array.from(
@@ -128,11 +135,11 @@ function buildPromptContextResponse(params: {
     selectedSkillNames,
     selectionCustomized: promptContext?.selectionCustomized === true,
     latestInjectedSkills,
-    importantNotes: promptContext?.importantNotes?.trim()
+    importantNotes: globalImportantNotes.content?.trim()
       ? {
           name: "important-notes",
-          description: "Durable guidance distilled from operator feedback.",
-          content: promptContext.importantNotes,
+          description: "Global guidance distilled from operator feedback across all sessions.",
+          content: globalImportantNotes.content,
         }
       : null,
     contextSummary: promptContext?.contextSummary?.trim()
@@ -1408,20 +1415,32 @@ export const sessionsHandlers: GatewayRequestHandlers = {
         ...(turn != null ? { turn } : {}),
         ...(summary.trim() ? { summary } : {}),
       };
+      let globalImportantNotesContent: string | undefined;
       const updated = await updateSessionPromptContext({
         key,
-        mutate: (entry) => ({
-          ...(entry ?? {
-            sessionId: randomUUID(),
+        mutate: (entry) => {
+          globalImportantNotesContent = appendGlobalImportantNote({
+            summary,
+            updatedAt: record.createdAt,
+            seedFromLegacyNotes: entry?.promptContext?.importantNotes,
+          }).content;
+          return {
+            ...(entry ?? {
+              sessionId: randomUUID(),
+              updatedAt: Date.now(),
+            }),
             updatedAt: Date.now(),
-          }),
-          updatedAt: Date.now(),
-          promptContext: buildUpdatedPromptContextFromFeedback({
-            current: entry?.promptContext,
-            record,
-            noteSummary: summary,
-          }),
-        }),
+            promptContext: buildUpdatedPromptContextFromFeedback({
+              current: entry?.promptContext,
+              record,
+              noteSummary: summary,
+            }),
+          };
+        },
+      });
+      const promptContextResponse = buildPromptContextResponse({
+        key: updated.key,
+        entry: updated.entry,
       });
       respond(
         true,
@@ -1432,7 +1451,16 @@ export const sessionsHandlers: GatewayRequestHandlers = {
           turn,
           rating,
           summary,
-          promptContext: buildPromptContextResponse({ key: updated.key, entry: updated.entry }),
+          promptContext: {
+            ...promptContextResponse,
+            importantNotes: globalImportantNotesContent?.trim()
+              ? {
+                  name: "important-notes",
+                  description: "Global guidance distilled from operator feedback across all sessions.",
+                  content: globalImportantNotesContent,
+                }
+              : promptContextResponse.importantNotes,
+          },
         },
         undefined,
       );

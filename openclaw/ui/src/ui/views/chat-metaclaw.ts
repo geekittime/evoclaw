@@ -66,6 +66,7 @@ export type ChatMetaclawProps = {
   onAddWhitelistEntry: (type: "command" | "path", value: string) => void;
   onRemoveWhitelistEntry: (type: "command" | "path", value: string) => void;
   onSaveSkillSelection: (skillNames: string[] | null) => void;
+  onAddSkill: (name: string, content: string) => Promise<void> | void;
   onSubmitFeedback: (
     turn: number | null,
     rating: "good" | "bad",
@@ -93,6 +94,10 @@ export type ChatMetaclawViewState = {
   metaclawWhitelistCommand: string;
   metaclawWhitelistPath: string;
   metaclawBlockedPath: string;
+  metaclawNewSkillName: string;
+  metaclawNewSkillContent: string;
+  metaclawSkillMessage: string;
+  metaclawSkillMessageTone: "success" | "danger" | null;
 };
 
 export function createChatMetaclawViewState(): ChatMetaclawViewState {
@@ -114,6 +119,10 @@ export function createChatMetaclawViewState(): ChatMetaclawViewState {
     metaclawWhitelistCommand: "",
     metaclawWhitelistPath: "",
     metaclawBlockedPath: "",
+    metaclawNewSkillName: "",
+    metaclawNewSkillContent: "",
+    metaclawSkillMessage: "",
+    metaclawSkillMessageTone: null,
   };
 }
 
@@ -927,10 +936,15 @@ function renderAccessListsPanel(
   `;
 }
 
-function renderSkillsPanel(props: ChatMetaclawProps): TemplateResult {
+function renderSkillsPanel(
+  props: ChatMetaclawProps,
+  viewState: ChatMetaclawViewState,
+  requestUpdate: () => void,
+): TemplateResult {
   const section = props.sections.skills;
   const selected = new Set(props.selectedSkillNames);
   const activeCount = props.selectedSkillNames.length;
+  const customSkillCount = props.skills.filter((skill) => skill.category === "session").length;
 
   return html`
     <section class="metaclaw-panel metaclaw-panel--skills">
@@ -949,6 +963,7 @@ function renderSkillsPanel(props: ChatMetaclawProps): TemplateResult {
             <div class="metaclaw-inline-stats">
               <span class="chip">${activeCount === 0 ? "No skills selected" : "Custom selection"}</span>
               <span class="chip">${activeCount} / ${props.skills.length} active</span>
+              <span class="chip">${customSkillCount} custom</span>
             </div>
             ${props.latestInjectedSkills.length
               ? html`
@@ -1010,9 +1025,84 @@ function renderSkillsPanel(props: ChatMetaclawProps): TemplateResult {
                 Disable All
               </button>
             </div>
+            ${renderSkillComposer(props, viewState, requestUpdate)}
           `
         : nothing}
     </section>
+  `;
+}
+
+function renderSkillComposer(
+  props: ChatMetaclawProps,
+  viewState: ChatMetaclawViewState,
+  requestUpdate: () => void,
+): TemplateResult {
+  return html`
+    <div class="metaclaw-list-block">
+      <div class="metaclaw-list-block__title">Add Custom Skill</div>
+      <div class="metaclaw-list-block__sub">
+        Create a session-only skill and immediately make it available in this prompt.
+      </div>
+      <div class="metaclaw-inline-form metaclaw-inline-form--stack">
+        <input
+          class="input"
+          .value=${viewState.metaclawNewSkillName}
+          @input=${(event: Event) => {
+            viewState.metaclawNewSkillName = (event.target as HTMLInputElement).value;
+            requestUpdate();
+          }}
+          placeholder="Skill name"
+        />
+        <textarea
+          class="metaclaw-feedback__input metaclaw-skill-composer__content"
+          .value=${viewState.metaclawNewSkillContent}
+          @input=${(event: Event) => {
+            viewState.metaclawNewSkillContent = (event.target as HTMLTextAreaElement).value;
+            requestUpdate();
+          }}
+          placeholder="Skill content"
+        ></textarea>
+        <div class="metaclaw-approval__actions">
+          <button
+            class="btn"
+            type="button"
+            ?disabled=${!viewState.metaclawNewSkillName.trim() ||
+            !viewState.metaclawNewSkillContent.trim() ||
+            props.saving}
+            @click=${async () => {
+              viewState.metaclawSkillMessage = "";
+              viewState.metaclawSkillMessageTone = null;
+              requestUpdate();
+              try {
+                await props.onAddSkill(
+                  viewState.metaclawNewSkillName.trim(),
+                  viewState.metaclawNewSkillContent.trim(),
+                );
+                viewState.metaclawNewSkillName = "";
+                viewState.metaclawNewSkillContent = "";
+                viewState.metaclawSkillMessage = "Skill added successfully.";
+                viewState.metaclawSkillMessageTone = "success";
+              } catch (error) {
+                viewState.metaclawSkillMessage = error instanceof Error ? error.message : String(error);
+                viewState.metaclawSkillMessageTone = "danger";
+              }
+              requestUpdate();
+            }}
+          >
+            Add Skill
+          </button>
+        </div>
+      </div>
+      ${viewState.metaclawSkillMessage
+        ? html`
+            <div
+              class="callout ${viewState.metaclawSkillMessageTone === "danger" ? "danger" : ""}"
+            >
+              ${viewState.metaclawSkillMessage}
+            </div>
+          `
+        : nothing}
+    </div>
   `;
 }
 
@@ -1161,7 +1251,11 @@ export function renderMetaclawStudio(
                 viewState,
                 requestUpdate,
               )}
-              ${renderAccessListsPanel(props, viewState, requestUpdate)} ${renderSkillsPanel(props)}
+              ${renderAccessListsPanel(props, viewState, requestUpdate)} ${renderSkillsPanel(
+                props,
+                viewState,
+                requestUpdate,
+              )}
               ${renderNotesPanel(props)} ${renderContextSummaryPanel(props)}
             </div>
           </section>
