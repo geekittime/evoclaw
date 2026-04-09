@@ -2,6 +2,7 @@ import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import { SessionManager } from "@mariozechner/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import { installSessionToolResultGuard } from "./session-tool-result-guard.js";
+import { guardSessionManager } from "./session-tool-result-guard-wrapper.js";
 import { castAgentMessage } from "./test-helpers/agent-message-fixtures.js";
 
 type AppendMessage = Parameters<SessionManager["appendMessage"]>[0];
@@ -460,6 +461,31 @@ describe("installSessionToolResultGuard", () => {
       kind: "inter_session",
       sourceTool: "sessions_send",
     });
+  });
+
+  it("strips injected runtime guidance from persisted user messages", () => {
+    const sm = guardSessionManager(SessionManager.inMemory());
+
+    sm.appendMessage(
+      asAppendMessage({
+        role: "user",
+        content: [
+          "[[OPENCLAW_RUNTIME_GUIDANCE_START]]",
+          "## Runtime Guidance For This Turn",
+          "Read and follow these notes and enabled skills before answering the user.",
+          "## Important Notes (High Priority)\nAlways greet first.",
+          "[[OPENCLAW_RUNTIME_GUIDANCE_END]]",
+          "hi",
+        ].join("\n\n"),
+        timestamp: Date.now(),
+      }),
+    );
+
+    const persisted = sm.getEntries().find((e) => e.type === "message") as
+      | { message?: Record<string, unknown> }
+      | undefined;
+    expect(persisted?.message?.role).toBe("user");
+    expect(persisted?.message?.content).toBe("hi");
   });
 
   // When an assistant message with toolCalls is aborted, no synthetic toolResult

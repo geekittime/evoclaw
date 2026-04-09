@@ -14,6 +14,7 @@ import { resolveSessionTranscriptFile } from "../../config/sessions/transcript.j
 import { emitAgentEvent } from "../../infra/agent-events.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { emitSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
+import { stripInjectedRuntimeGuidanceFromPrompt } from "../../sessions/prompt-context.js";
 import { sanitizeForLog } from "../../terminal/ansi.js";
 import { resolveMessageChannel } from "../../utils/message-channel.js";
 import { resolveBootstrapWarningSignaturesSeen } from "../bootstrap-budget.js";
@@ -249,7 +250,7 @@ export async function persistAcpTurnTranscript(params: {
   threadId?: string | number;
   sessionCwd: string;
 }): Promise<SessionEntry | undefined> {
-  const promptText = params.body;
+  const promptText = stripInjectedRuntimeGuidanceFromPrompt(params.body);
   const replyText = params.finalText;
   if (!promptText && !replyText) {
     return params.sessionEntry;

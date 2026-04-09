@@ -1,19 +1,31 @@
 import { stripInboundMetadata } from "../../../../src/auto-reply/reply/strip-inbound-meta.js";
+import { stripInjectedRuntimeGuidanceFromPrompt } from "../../../../src/sessions/prompt-context.js";
 import { formatRawAssistantErrorForUi } from "../../../../src/shared/assistant-error-format.js";
 import { stripEnvelope } from "../../../../src/shared/chat-envelope.js";
 import { stripThinkingTags } from "../format.ts";
 
 const textCache = new WeakMap<object, string | null>();
 const thinkingCache = new WeakMap<object, string | null>();
+const LEADING_UI_TIMESTAMP_PREFIX_RE =
+  /^\s*\[[A-Za-z]{3}\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}[^\]]*\]\s*/u;
+
+function stripLeadingUiTimestamp(text: string): string {
+  return text.replace(LEADING_UI_TIMESTAMP_PREFIX_RE, "");
+}
 
 function processMessageText(text: string, role: string): string {
   const shouldStripInboundMetadata = role.toLowerCase() === "user";
   if (role === "assistant") {
     return stripThinkingTags(text);
   }
-  return shouldStripInboundMetadata
+  const stripped = shouldStripInboundMetadata
     ? stripInboundMetadata(stripEnvelope(text))
     : stripEnvelope(text);
+  if (!shouldStripInboundMetadata) {
+    return stripped;
+  }
+  const runtimeStripped = stripInjectedRuntimeGuidanceFromPrompt(stripped) ?? stripped;
+  return stripLeadingUiTimestamp(runtimeStripped);
 }
 
 export function extractText(message: unknown): string | null {

@@ -15,6 +15,7 @@ import { clearCommandLane, getQueueSize } from "../../process/command-queue.js";
 import { normalizeMainKey } from "../../routing/session-key.js";
 import {
   buildSessionPromptContextAddition,
+  wrapRuntimeGuidanceForPrompt,
   buildUpdatedPromptContextForSummary,
   resolveSessionSelectedSkillNames,
   shouldAutoRefreshContextSummary,
@@ -491,14 +492,10 @@ export async function runPreparedReply(
     ? [mediaNote, mediaReplyHint, prefixedBody ?? ""].filter(Boolean).join("\n").trim()
     : prefixedBody;
   if (promptBodyContextAddition) {
-    prefixedCommandBody = [
-      "## Runtime Guidance For This Turn",
-      "Read and follow these notes and enabled skills before answering the user.",
+    prefixedCommandBody = wrapRuntimeGuidanceForPrompt(
       promptBodyContextAddition,
       prefixedCommandBody,
-    ]
-      .filter(Boolean)
-      .join("\n\n");
+    );
   }
   if (!resolvedThinkLevel) {
     resolvedThinkLevel = await modelState.resolveDefaultThinkingLevel();

@@ -3,12 +3,19 @@
  */
 
 import { stripInboundMetadata } from "../../../../src/auto-reply/reply/strip-inbound-meta.js";
+import { stripInjectedRuntimeGuidanceFromPrompt } from "../../../../src/sessions/prompt-context.js";
 import {
   isToolCallContentType,
   isToolResultContentType,
   resolveToolBlockArgs,
 } from "../../../../src/chat/tool-content.js";
 import type { NormalizedMessage, MessageContentItem } from "../types/chat-types.ts";
+const LEADING_UI_TIMESTAMP_PREFIX_RE =
+  /^\s*\[[A-Za-z]{3}\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}[^\]]*\]\s*/u;
+
+function stripLeadingUiTimestamp(text: string): string {
+  return text.replace(LEADING_UI_TIMESTAMP_PREFIX_RE, "");
+}
 
 /**
  * Normalize a raw message object into a consistent structure.
@@ -61,7 +68,13 @@ export function normalizeMessage(message: unknown): NormalizedMessage {
   if (role === "user" || role === "User") {
     content = content.map((item) => {
       if (item.type === "text" && typeof item.text === "string") {
-        return { ...item, text: stripInboundMetadata(item.text) };
+        const stripped = stripInboundMetadata(item.text);
+        return {
+          ...item,
+          text: stripLeadingUiTimestamp(
+            stripInjectedRuntimeGuidanceFromPrompt(stripped) ?? stripped,
+          ),
+        };
       }
       return item;
     });

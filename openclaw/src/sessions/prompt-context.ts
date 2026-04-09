@@ -13,10 +13,77 @@ const MAX_SKILL_SELECTION_HISTORY = 32;
 const MAX_CUSTOM_SKILLS = 32;
 const MAX_CUSTOM_SKILL_NAME_CHARS = 120;
 const MAX_CUSTOM_SKILL_CONTENT_CHARS = 12_000;
+export const RUNTIME_GUIDANCE_START_MARKER = "[[OPENCLAW_RUNTIME_GUIDANCE_START]]";
+export const RUNTIME_GUIDANCE_END_MARKER = "[[OPENCLAW_RUNTIME_GUIDANCE_END]]";
+const LEGACY_RUNTIME_GUIDANCE_BLOCK_PREFIXES = [
+  "## Runtime Guidance For This Turn",
+  "## Important Notes (High Priority)",
+  "## Enabled Session Skills",
+  "## Session Custom Skills",
+  "## Conversation Summary",
+  "## Additional Runtime Context",
+  "## Group Chat Context",
+  "## Subagent Context",
+] as const;
 
 function trimOptionalText(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
+}
+
+export function wrapRuntimeGuidanceForPrompt(addition: string, body: string): string {
+  const normalizedAddition = addition.trim();
+  const normalizedBody = body.trim();
+  if (!normalizedAddition) {
+    return body;
+  }
+  return [
+    RUNTIME_GUIDANCE_START_MARKER,
+    "## Runtime Guidance For This Turn",
+    "Read and follow these notes and enabled skills before answering the user.",
+    normalizedAddition,
+    RUNTIME_GUIDANCE_END_MARKER,
+    normalizedBody,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+export function stripInjectedRuntimeGuidanceFromPrompt(value: string | undefined): string | undefined {
+  const text = trimOptionalText(value);
+  if (!text) {
+    return undefined;
+  }
+  const start = text.indexOf(RUNTIME_GUIDANCE_START_MARKER);
+  const end = text.indexOf(RUNTIME_GUIDANCE_END_MARKER);
+  if (start !== 0 || end < 0) {
+    return stripLegacyInjectedRuntimeGuidanceFromPrompt(text);
+  }
+  const remaining = text.slice(end + RUNTIME_GUIDANCE_END_MARKER.length).trim();
+  return remaining || undefined;
+}
+
+function isLegacyRuntimeGuidanceBlock(block: string): boolean {
+  const trimmed = block.trim();
+  return LEGACY_RUNTIME_GUIDANCE_BLOCK_PREFIXES.some((prefix) => trimmed.startsWith(prefix));
+}
+
+function stripLegacyInjectedRuntimeGuidanceFromPrompt(text: string): string {
+  const blocks = text
+    .split(/\n{2,}/u)
+    .map((block) => block.trim())
+    .filter(Boolean);
+  if (blocks.length < 2 || !isLegacyRuntimeGuidanceBlock(blocks[0] ?? "")) {
+    return text;
+  }
+  let index = 0;
+  while (index < blocks.length && isLegacyRuntimeGuidanceBlock(blocks[index] ?? "")) {
+    index += 1;
+  }
+  if (index <= 0 || index >= blocks.length) {
+    return text;
+  }
+  return blocks.slice(index).join("\n\n").trim() || text;
 }
 
 function clampTail(value: string, maxChars: number): string {

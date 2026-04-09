@@ -4,6 +4,7 @@ import {
   applyInputProvenanceToUserMessage,
   type InputProvenance,
 } from "../sessions/input-provenance.js";
+import { stripInjectedRuntimeGuidanceFromPrompt } from "../sessions/prompt-context.js";
 import { installSessionToolResultGuard } from "./session-tool-result-guard.js";
 
 export type GuardedSessionManager = SessionManager & {
@@ -64,8 +65,24 @@ export function guardSessionManager(
 
   const guard = installSessionToolResultGuard(sessionManager, {
     sessionKey: opts?.sessionKey,
-    transformMessageForPersistence: (message) =>
-      applyInputProvenanceToUserMessage(message, opts?.inputProvenance),
+    transformMessageForPersistence: (message) => {
+      const withProvenance = applyInputProvenanceToUserMessage(message, opts?.inputProvenance);
+      if ((withProvenance as { role?: string }).role !== "user") {
+        return withProvenance;
+      }
+      const content =
+        typeof (withProvenance as { content?: unknown }).content === "string"
+          ? (withProvenance as { content: string }).content
+          : undefined;
+      const stripped = stripInjectedRuntimeGuidanceFromPrompt(content);
+      if (!content || stripped === content) {
+        return withProvenance;
+      }
+      return {
+        ...(withProvenance as unknown as Record<string, unknown>),
+        content: stripped ?? "",
+      } as typeof withProvenance;
+    },
     transformToolResultForPersistence: transform,
     allowSyntheticToolResults: opts?.allowSyntheticToolResults,
     allowedToolNames: opts?.allowedToolNames,

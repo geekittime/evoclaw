@@ -5,7 +5,9 @@ import {
   buildUpdatedPromptContextForSkillSelection,
   buildUpdatedPromptContextForSummary,
   buildUpdatedPromptContextFromFeedback,
+  stripInjectedRuntimeGuidanceFromPrompt,
   shouldAutoRefreshContextSummary,
+  wrapRuntimeGuidanceForPrompt,
 } from "./prompt-context.js";
 
 describe("session prompt context helpers", () => {
@@ -123,5 +125,35 @@ describe("session prompt context helpers", () => {
     expect(next.contextSummarySource).toBe("manual");
     expect(next.contextSummaryUpdatedAt).toBe(20);
     expect(next.contextSummaryTokenCount).toBe(210_000);
+  });
+
+  it("wraps runtime guidance for model input and can strip it back to the user prompt", () => {
+    const wrapped = wrapRuntimeGuidanceForPrompt(
+      "## Important Notes (High Priority)\nAlways greet first.",
+      "请帮我删除 temp0 目录中的 py 文件",
+    );
+
+    expect(wrapped).toContain("[[OPENCLAW_RUNTIME_GUIDANCE_START]]");
+    expect(wrapped).toContain("## Runtime Guidance For This Turn");
+    expect(wrapped).toContain("Always greet first.");
+    expect(stripInjectedRuntimeGuidanceFromPrompt(wrapped)).toBe(
+      "请帮我删除 temp0 目录中的 py 文件",
+    );
+  });
+
+  it("strips legacy unwrapped runtime guidance and keeps only the original user prompt", () => {
+    const legacyPrompt = [
+      "## Important Notes (High Priority)",
+      "Always greet first.",
+      "",
+      "## Enabled Session Skills",
+      "Enabled skills: safe-delete, verify-before-delete.",
+      "",
+      "请帮我删除 temp0 目录中的 py 文件",
+    ].join("\n");
+
+    expect(stripInjectedRuntimeGuidanceFromPrompt(legacyPrompt)).toBe(
+      "请帮我删除 temp0 目录中的 py 文件",
+    );
   });
 });

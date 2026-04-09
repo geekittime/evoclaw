@@ -85,6 +85,7 @@ import { resolveAgentTimeoutMs } from "./timeout.js";
 import { ensureAgentWorkspace } from "./workspace.js";
 import {
   buildSessionPromptContextAddition,
+  wrapRuntimeGuidanceForPrompt,
   buildUpdatedPromptContextForSummary,
   resolveSessionSelectedSkillNames,
   shouldAutoRefreshContextSummary,
@@ -784,12 +785,7 @@ async function agentCommandInternal(
       .join("\n\n");
     const runBody =
       runPromptBodyContext.length > 0
-        ? [
-            "## Runtime Guidance For This Turn",
-            "Read and follow these notes and enabled skills before responding.",
-            runPromptBodyContext,
-            body,
-          ].join("\n\n")
+        ? wrapRuntimeGuidanceForPrompt(runPromptBodyContext, body)
         : body;
 
     const startedAt = Date.now();

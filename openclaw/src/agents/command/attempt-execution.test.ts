@@ -2,7 +2,11 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { resolveFallbackRetryPrompt, sessionFileHasContent } from "./attempt-execution.js";
+import {
+  persistAcpTurnTranscript,
+  resolveFallbackRetryPrompt,
+  sessionFileHasContent,
+} from "./attempt-execution.js";
 
 describe("resolveFallbackRetryPrompt", () => {
   const originalBody = "Summarize the quarterly earnings report and highlight key trends.";
@@ -155,5 +159,65 @@ describe("sessionFileHasContent", () => {
     const link = path.join(tmpDir, "link.jsonl");
     await fs.symlink(realFile, link);
     expect(await sessionFileHasContent(link)).toBe(false);
+  });
+});
+
+describe("persistAcpTurnTranscript", () => {
+  let tmpDir: string;
+  let previousStateDir: string | undefined;
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "oc-acp-persist-"));
+    previousStateDir = process.env.OPENCLAW_STATE_DIR;
+    process.env.OPENCLAW_STATE_DIR = tmpDir;
+  });
+
+  afterEach(async () => {
+    if (previousStateDir === undefined) {
+      delete process.env.OPENCLAW_STATE_DIR;
+    } else {
+      process.env.OPENCLAW_STATE_DIR = previousStateDir;
+    }
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it("strips injected runtime guidance before persisting the user transcript", async () => {
+    const storePath = path.join(tmpDir, "sessions.json");
+    const sessionStore = {
+      "agent:main:main": {
+        sessionId: "sess-1",
+        updatedAt: Date.now(),
+      },
+    };
+
+    await persistAcpTurnTranscript({
+      body: [
+        "[[OPENCLAW_RUNTIME_GUIDANCE_START]]",
+        "## Runtime Guidance For This Turn",
+        "Read and follow these notes and enabled skills before responding.",
+        "## Important Notes (High Priority)\nAlways greet first.",
+        "[[OPENCLAW_RUNTIME_GUIDANCE_END]]",
+        "hi",
+      ].join("\n\n"),
+      finalText: "hello",
+      sessionId: "sess-1",
+      sessionKey: "agent:main:main",
+      sessionEntry: sessionStore["agent:main:main"],
+      sessionStore,
+      storePath,
+      sessionAgentId: "main",
+      sessionCwd: tmpDir,
+    });
+
+    const sessionsDir = path.join(tmpDir, "agents", "main", "sessions");
+    const files = await fs.readdir(sessionsDir);
+    const transcriptFile = files.find((name) => name.endsWith(".jsonl"));
+    expect(transcriptFile).toBeTruthy();
+    const transcriptPath = path.join(sessionsDir, transcriptFile!);
+    const transcript = await fs.readFile(transcriptPath, "utf8");
+
+    expect(transcript).toContain('"content":"hi"');
+    expect(transcript).not.toContain("OPENCLAW_RUNTIME_GUIDANCE_START");
+    expect(transcript).not.toContain("Important Notes (High Priority)");
   });
 });

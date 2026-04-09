@@ -145,6 +145,37 @@ describe("message-normalizer", () => {
 
       expect(result.senderLabel).toBe("Iris");
     });
+
+    it("strips runtime guidance from normalized user content", () => {
+      const result = normalizeMessage({
+        role: "user",
+        content: [
+          "[[OPENCLAW_RUNTIME_GUIDANCE_START]]",
+          "",
+          "## Runtime Guidance For This Turn",
+          "",
+          "## Important Notes (High Priority)",
+          "Always greet first.",
+          "",
+          "[[OPENCLAW_RUNTIME_GUIDANCE_END]]",
+          "",
+          "请帮我删除 temp0 目录中的 py 文件",
+        ].join("\n"),
+      });
+
+      expect(result.content).toEqual([
+        { type: "text", text: "请帮我删除 temp0 目录中的 py 文件" },
+      ]);
+    });
+
+    it("strips leading timestamp prefixes from normalized user content", () => {
+      const result = normalizeMessage({
+        role: "user",
+        content: "[Thu 2026-04-09 18:59 GMT+8] 你现在在哪个文件夹",
+      });
+
+      expect(result.content).toEqual([{ type: "text", text: "你现在在哪个文件夹" }]);
+    });
   });
 
   describe("normalizeRoleForGrouping", () => {
