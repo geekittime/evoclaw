@@ -1557,7 +1557,7 @@ exec_command: rm -rf new`,
     }
   });
 
-  it("adds a custom skill from Session Studio and shows a success message", async () => {
+  it("adds a workspace skill from Session Studio and shows a success message", async () => {
     const container = document.createElement("div");
     cleanupChatModuleState();
     try {
@@ -1590,10 +1590,12 @@ exec_command: rm -rf new`,
       await flushTasks();
 
       const inputs = Array.from(container.querySelectorAll("input"));
-      const skillNameInput = inputs.find((input) => input.getAttribute("placeholder") === "Skill name");
+      const skillNameInput = inputs.find(
+        (input) => input.getAttribute("placeholder") === "Skill title",
+      );
       expect(skillNameInput).toBeTruthy();
       if (skillNameInput) {
-        skillNameInput.value = "my-session-skill";
+        skillNameInput.value = "my-library-skill";
         skillNameInput.dispatchEvent(new Event("input", { bubbles: true }));
       }
       await flushTasks();
@@ -1617,10 +1619,12 @@ exec_command: rm -rf new`,
       await flushTasks();
 
       expect(onAddSkill).toHaveBeenCalledWith(
-        "my-session-skill",
+        "my-library-skill",
         "Always summarize first, then act.",
       );
-      expect(container.textContent).toContain("Skill added successfully.");
+      expect(container.textContent).toContain(
+        "Skill added to the workspace library and enabled for this session.",
+      );
     } finally {
       cleanupChatModuleState();
     }

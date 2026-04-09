@@ -5,7 +5,7 @@ import type { GatewayBrowserClient } from "../gateway.ts";
 import type { ExecApprovalRequest } from "./exec-approval.ts";
 import type { ExecApprovalsSnapshot } from "./exec-approvals.ts";
 import {
-  addMetaclawCustomSkill,
+  addMetaclawWorkspaceSkill,
   compactMetaclawConversationHistory,
   createInitialMetaclawSectionsState,
   loadMetaclawState,
@@ -256,7 +256,7 @@ describe("metaclaw controller in native OpenClaw mode", () => {
     expect(state.metaclawSelectionCustomized).toBe(true);
   });
 
-  it("merges custom session skills into the visible skills list and can add a new one", async () => {
+  it("creates a workspace skill, refreshes the library, and auto-selects it", async () => {
     const state = createState({}, async (method, params) => {
       switch (method) {
         case "skills.status":
@@ -267,25 +267,32 @@ describe("metaclaw controller in native OpenClaw mode", () => {
           return {
             ok: true,
             key: "agent:main:main",
-            selectedSkillNames: ["security-triage", "my-custom-skill"],
+            selectedSkillNames: ["security-triage"],
             selectionCustomized: true,
-            latestInjectedSkills: ["security-triage", "my-custom-skill"],
-            customSkills: [
-              {
-                name: "my-custom-skill",
-                description: "Summarize first, act second.",
-                category: "session",
-                content: "Summarize first, act second.",
-              },
-            ],
+            latestInjectedSkills: ["security-triage"],
           };
         case "exec.approvals.get":
           return createExecSnapshot();
-        case "sessions.promptContext.skills.add":
+        case "skills.create":
+          expect(params).toEqual({
+            agentId: "main",
+            title: "another-skill",
+            content: "Check for destructive side effects first.",
+          });
+          return {
+            ok: true,
+            agentId: "main",
+            workspaceDir: "/tmp/workspace",
+            dirName: "another-skill",
+            filePath: "/tmp/workspace/skills/another-skill/SKILL.md",
+            name: "another-skill",
+            description: "Check for destructive side effects first.",
+          };
+        case "sessions.promptContext.skills.set":
           expect(params).toEqual({
             key: "agent:main:main",
-            name: "another-skill",
-            content: "Check for destructive side effects first.",
+            selectedSkillNames: ["another-skill", "security-triage"],
+            selectionCustomized: true,
           });
           return { ok: true };
         default:
@@ -294,42 +301,53 @@ describe("metaclaw controller in native OpenClaw mode", () => {
     });
 
     await loadMetaclawState(state);
-    expect(state.metaclawSkills.map((skill) => skill.name)).toEqual([
-      "my-custom-skill",
-      "security-triage",
-    ]);
+    expect(state.metaclawSkills.map((skill) => skill.name)).toEqual(["security-triage"]);
 
     const refreshedState = createState(
       {
         ...state,
         client: createClient(async (method, params) => {
           switch (method) {
-            case "sessions.promptContext.skills.add":
+            case "skills.create":
+              expect(params).toEqual({
+                agentId: "main",
+                title: "another-skill",
+                content: "Check for destructive side effects first.",
+              });
+              return {
+                ok: true,
+                agentId: "main",
+                workspaceDir: "/tmp/workspace",
+                dirName: "another-skill",
+                filePath: "/tmp/workspace/skills/another-skill/SKILL.md",
+                name: "another-skill",
+                description: "Check for destructive side effects first.",
+              };
+            case "sessions.promptContext.skills.set":
               expect(params).toEqual({
                 key: "agent:main:main",
-                name: "another-skill",
-                content: "Check for destructive side effects first.",
+                selectedSkillNames: ["another-skill", "security-triage"],
+                selectionCustomized: true,
               });
               return { ok: true };
             case "skills.status":
               return {
-                skills: [{ name: "security-triage", description: "desc", source: "workspace" }],
+                skills: [
+                  { name: "security-triage", description: "desc", source: "workspace" },
+                  {
+                    name: "another-skill",
+                    description: "Check for destructive side effects first.",
+                    source: "workspace",
+                  },
+                ],
               };
             case "sessions.promptContext.get":
               return {
                 ok: true,
                 key: "agent:main:main",
-                selectedSkillNames: ["security-triage", "another-skill"],
+                selectedSkillNames: ["another-skill", "security-triage"],
                 selectionCustomized: true,
-                latestInjectedSkills: ["security-triage", "another-skill"],
-                customSkills: [
-                  {
-                    name: "another-skill",
-                    description: "Check for destructive side effects first.",
-                    category: "session",
-                    content: "Check for destructive side effects first.",
-                  },
-                ],
+                latestInjectedSkills: ["another-skill", "security-triage"],
               };
             case "exec.approvals.get":
               return createExecSnapshot();
@@ -340,7 +358,7 @@ describe("metaclaw controller in native OpenClaw mode", () => {
       },
     );
 
-    await addMetaclawCustomSkill(
+    await addMetaclawWorkspaceSkill(
       refreshedState,
       "another-skill",
       "Check for destructive side effects first.",
@@ -350,8 +368,8 @@ describe("metaclaw controller in native OpenClaw mode", () => {
       "security-triage",
     ]);
     expect(refreshedState.metaclawSelectedSkillNames).toEqual([
-      "security-triage",
       "another-skill",
+      "security-triage",
     ]);
   });
 

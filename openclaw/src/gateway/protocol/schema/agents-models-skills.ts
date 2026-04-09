@@ -221,6 +221,15 @@ export const SkillsInstallParamsSchema = Type.Union([
   ),
 ]);
 
+export const SkillsCreateParamsSchema = Type.Object(
+  {
+    title: NonEmptyString,
+    content: Type.String({ minLength: 1 }),
+    agentId: Type.Optional(NonEmptyString),
+  },
+  { additionalProperties: false },
+);
+
 export const SkillsUpdateParamsSchema = Type.Union([
   Type.Object(
     {

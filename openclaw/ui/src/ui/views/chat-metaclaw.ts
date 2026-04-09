@@ -1038,10 +1038,10 @@ function renderSkillComposer(
   requestUpdate: () => void,
 ): TemplateResult {
   return html`
-    <div class="metaclaw-list-block">
-      <div class="metaclaw-list-block__title">Add Custom Skill</div>
+    <div class="metaclaw-list-block metaclaw-skill-composer">
+      <div class="metaclaw-list-block__title">Add Skill To Library</div>
       <div class="metaclaw-list-block__sub">
-        Create a session-only skill and immediately make it available in this prompt.
+        Create a workspace skill, add it to the skills library, and enable it for this session.
       </div>
       <div class="metaclaw-inline-form metaclaw-inline-form--stack">
         <input
@@ -1051,7 +1051,7 @@ function renderSkillComposer(
             viewState.metaclawNewSkillName = (event.target as HTMLInputElement).value;
             requestUpdate();
           }}
-          placeholder="Skill name"
+          placeholder="Skill title"
         />
         <textarea
           class="metaclaw-feedback__input metaclaw-skill-composer__content"
@@ -1080,7 +1080,8 @@ function renderSkillComposer(
                 );
                 viewState.metaclawNewSkillName = "";
                 viewState.metaclawNewSkillContent = "";
-                viewState.metaclawSkillMessage = "Skill added successfully.";
+                viewState.metaclawSkillMessage =
+                  "Skill added to the workspace library and enabled for this session.";
                 viewState.metaclawSkillMessageTone = "success";
               } catch (error) {
                 viewState.metaclawSkillMessage = error instanceof Error ? error.message : String(error);

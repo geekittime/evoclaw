@@ -82,6 +82,17 @@ export type MetaclawContextSummaryResponse = {
   has_summary: boolean;
 };
 
+export type MetaclawSkillCreateResponse = {
+  ok: boolean;
+  agentId: string;
+  workspaceDir: string;
+  dirName: string;
+  filePath: string;
+  name: string;
+  description: string;
+  message?: string;
+};
+
 export type MetaclawSectionStatus = "idle" | "ready" | "unavailable" | "error";
 
 export type MetaclawSectionState = {
@@ -710,7 +721,7 @@ export async function saveMetaclawSkillSelection(
   }
 }
 
-export async function addMetaclawCustomSkill(
+export async function addMetaclawWorkspaceSkill(
   state: MetaclawState,
   name: string,
   content: string,
@@ -721,12 +732,22 @@ export async function addMetaclawCustomSkill(
   state.metaclawSaving = true;
   state.metaclawError = null;
   try {
-    await state.client.request("sessions.promptContext.skills.add", {
-      key: state.sessionKey,
-      name,
+    const priorSelected = [...state.metaclawSelectedSkillNames];
+    const result = await state.client.request<MetaclawSkillCreateResponse>("skills.create", {
+      agentId: resolveCurrentAgentId(state.sessionKey),
+      title: name,
       content,
     });
+    const nextSelected = Array.from(new Set([...priorSelected, result.name])).sort((left, right) =>
+      left.localeCompare(right),
+    );
+    await state.client.request("sessions.promptContext.skills.set", {
+      key: state.sessionKey,
+      selectedSkillNames: nextSelected,
+      selectionCustomized: true,
+    });
     await loadMetaclawState(state);
+    return result;
   } catch (error) {
     state.metaclawError = error instanceof Error ? error.message : String(error);
     throw error;

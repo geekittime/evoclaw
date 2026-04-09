@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import {
   listAgentIds,
   resolveAgentWorkspaceDir,
@@ -18,6 +20,7 @@ import {
   errorShape,
   formatValidationErrors,
   validateSkillsBinsParams,
+  validateSkillsCreateParams,
   validateSkillsInstallParams,
   validateSkillsStatusParams,
   validateSkillsUpdateParams,
@@ -53,6 +56,70 @@ function collectSkillBins(entries: SkillEntry[]): string[] {
     }
   }
   return [...bins].toSorted();
+}
+
+function trimOptionalText(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function clampText(value: string, maxChars: number): string {
+  return value.length > maxChars ? value.slice(0, maxChars) : value;
+}
+
+function slugifySkillDirName(title: string): string {
+  const normalized = title
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  if (normalized) {
+    return normalized.slice(0, 72);
+  }
+  return `skill-${Date.now().toString(36)}`;
+}
+
+function resolveUniqueSkillDir(skillsRoot: string, baseSlug: string): string {
+  let candidate = baseSlug;
+  let index = 2;
+  while (fs.existsSync(path.join(skillsRoot, candidate))) {
+    candidate = `${baseSlug}-${index}`;
+    index += 1;
+  }
+  return candidate;
+}
+
+function yamlQuote(value: string): string {
+  return JSON.stringify(value);
+}
+
+function deriveSkillDescription(title: string, content: string): string {
+  const lines = content
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !line.startsWith("#"));
+  const firstMeaningful = lines.find((line) => line.toLowerCase() !== title.trim().toLowerCase());
+  return clampText(firstMeaningful ?? `${title.trim()} skill.`, 180);
+}
+
+function buildSkillMarkdown(params: {
+  title: string;
+  description: string;
+  content: string;
+}): string {
+  const body = params.content.trim();
+  const normalizedBody = body.startsWith("#") ? body : `# ${params.title}\n\n${body}`;
+  return [
+    "---",
+    `name: ${yamlQuote(params.title)}`,
+    `description: ${yamlQuote(params.description)}`,
+    "---",
+    "",
+    normalizedBody,
+    "",
+  ].join("\n");
 }
 
 export const skillsHandlers: GatewayRequestHandlers = {
@@ -111,6 +178,100 @@ export const skillsHandlers: GatewayRequestHandlers = {
       }
     }
     respond(true, { bins: [...bins].toSorted() }, undefined);
+  },
+  "skills.create": async ({ params, respond }) => {
+    if (!validateSkillsCreateParams(params)) {
+      respond(
+        false,
+        undefined,
+        errorShape(
+          ErrorCodes.INVALID_REQUEST,
+          `invalid skills.create params: ${formatValidationErrors(validateSkillsCreateParams.errors)}`,
+        ),
+      );
+      return;
+    }
+    const cfg = loadConfig();
+    const agentIdRaw = typeof params?.agentId === "string" ? params.agentId.trim() : "";
+    const agentId = agentIdRaw ? normalizeAgentId(agentIdRaw) : resolveDefaultAgentId(cfg);
+    if (agentIdRaw) {
+      const knownAgents = listAgentIds(cfg);
+      if (!knownAgents.includes(agentId)) {
+        respond(
+          false,
+          undefined,
+          errorShape(ErrorCodes.INVALID_REQUEST, `unknown agent id "${agentIdRaw}"`),
+        );
+        return;
+      }
+    }
+
+    const title = trimOptionalText(String(params?.title ?? ""));
+    const content = trimOptionalText(String(params?.content ?? ""));
+    if (!title || !content) {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.INVALID_REQUEST, "title and content are required"),
+      );
+      return;
+    }
+
+    const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
+    const existing = loadWorkspaceSkillEntries(workspaceDir, { config: cfg });
+    const hasNameCollision = existing.some(
+      (entry) => entry.skill.name.trim().toLowerCase() === title.toLowerCase(),
+    );
+    if (hasNameCollision) {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.INVALID_REQUEST, `skill "${title}" already exists`),
+      );
+      return;
+    }
+
+    try {
+      const skillsRoot = path.join(workspaceDir, "skills");
+      fs.mkdirSync(skillsRoot, { recursive: true });
+      const dirName = resolveUniqueSkillDir(skillsRoot, slugifySkillDirName(title));
+      const skillDir = path.join(skillsRoot, dirName);
+      const filePath = path.join(skillDir, "SKILL.md");
+      const description = deriveSkillDescription(title, content);
+      fs.mkdirSync(skillDir, { recursive: true });
+      fs.writeFileSync(
+        filePath,
+        buildSkillMarkdown({
+          title,
+          description,
+          content,
+        }),
+        "utf8",
+      );
+      respond(
+        true,
+        {
+          ok: true,
+          agentId,
+          workspaceDir,
+          dirName,
+          filePath,
+          name: title,
+          description,
+          message: `Created skill "${title}" in the workspace library.`,
+        },
+        undefined,
+      );
+    } catch (error) {
+      respond(
+        false,
+        undefined,
+        errorShape(
+          ErrorCodes.UNAVAILABLE,
+          error instanceof Error ? error.message : String(error),
+        ),
+      );
+    }
   },
   "skills.install": async ({ params, respond }) => {
     if (!validateSkillsInstallParams(params)) {
