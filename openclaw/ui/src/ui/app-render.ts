@@ -256,6 +256,22 @@ function dismissUpdateBanner(updateAvailable: unknown) {
   }
 }
 
+function resolveMessageTimestamp(value: unknown): number {
+  if (!value || typeof value !== "object") {
+    return Number.MAX_SAFE_INTEGER;
+  }
+  const timestamp = (value as { timestamp?: unknown }).timestamp;
+  return typeof timestamp === "number" && Number.isFinite(timestamp)
+    ? timestamp
+    : Number.MAX_SAFE_INTEGER;
+}
+
+function buildVisibleConversationForCompaction(state: AppViewState): unknown[] {
+  return [...state.chatMessages, ...state.chatToolMessages].sort(
+    (left, right) => resolveMessageTimestamp(left) - resolveMessageTimestamp(right),
+  );
+}
+
 const AVATAR_DATA_RE = /^data:/i;
 const AVATAR_HTTP_RE = /^https?:\/\//i;
 const COMMUNICATION_SECTION_KEYS = ["channels", "messages", "broadcast", "talk", "audio"] as const;
@@ -1483,12 +1499,13 @@ export function renderApp(state: AppViewState) {
               onAttachmentsChange: (next) => (state.chatAttachments = next),
               onSend: () => state.handleSendChat(),
               onCompactHistory: async () => {
-                if (state.metaclawCompactingHistory || state.chatMessages.length === 0) {
+                const messagesForCompaction = buildVisibleConversationForCompaction(state);
+                if (state.metaclawCompactingHistory || messagesForCompaction.length === 0) {
                   return;
                 }
                 state.metaclawCompactingHistory = true;
                 try {
-                  await compactMetaclawConversationHistory(state, state.chatMessages);
+                  await compactMetaclawConversationHistory(state, messagesForCompaction);
                 } finally {
                   state.metaclawCompactingHistory = false;
                   state.scheduleMetaclawRefresh(0);
@@ -1577,12 +1594,13 @@ export function renderApp(state: AppViewState) {
                     onTokenChange: (value) => (state.metaclawToken = value),
                     onRefresh: () => loadMetaclawState(state),
                     onCompactHistory: async () => {
-                      if (state.metaclawCompactingHistory || state.chatMessages.length === 0) {
+                      const messagesForCompaction = buildVisibleConversationForCompaction(state);
+                      if (state.metaclawCompactingHistory || messagesForCompaction.length === 0) {
                         return;
                       }
                       state.metaclawCompactingHistory = true;
                       try {
-                        await compactMetaclawConversationHistory(state, state.chatMessages);
+                        await compactMetaclawConversationHistory(state, messagesForCompaction);
                       } finally {
                         state.metaclawCompactingHistory = false;
                         state.scheduleMetaclawRefresh(0);

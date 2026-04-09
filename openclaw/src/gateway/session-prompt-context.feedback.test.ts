@@ -56,3 +56,72 @@ describe("summarizeFeedbackIntoImportantNote", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("summarizeConversationHistory", () => {
+  const originalFetch = globalThis.fetch;
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("asks DeepSeek for a detailed session summary including user turns, assistant replies, and tool execution", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        max_tokens?: number;
+        messages?: Array<{ role?: string; content?: string }>;
+      };
+      const system = body.messages?.[0]?.content ?? "";
+      const user = body.messages?.[1]?.content ?? "";
+
+      expect(body.max_tokens).toBe(1400);
+      expect(system).toContain("Write a detailed but concise summary");
+      expect(system).toContain("Capture the session in natural language");
+      expect(system).toContain("Include the important user questions");
+      expect(system).toContain("the meaningful tool calls and their results");
+      expect(user).toContain("Please summarize the full session, including both the conversation itself and the tool execution process.");
+      expect(user).toContain("User: 今天南京天气怎么样？");
+      expect(user).toContain("Assistant: 今天南京多云");
+      expect(user).toContain("Tool: Tool call: weather");
+      expect(user).toContain("Tool: Tool result: weather");
+
+      return {
+        ok: true,
+        json: async () => ({
+          choices: [
+            {
+              message: {
+                content:
+                  "用户先询问南京天气，助手通过 weather 工具查询后给出了多云和温度范围。随后用户继续让助手检查 temp0 目录，工具结果表明目录中存在 hi.py 与 hh.py，后续删除动作仍待确认。",
+              },
+            },
+          ],
+        }),
+      } as Response;
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const { summarizeConversationHistory } = await import("./session-prompt-context.js");
+    const summary = await summarizeConversationHistory({
+      instructions: "Keep weather facts and file-operation state.",
+      messages: [
+        { role: "user", content: "今天南京天气怎么样？" },
+        { role: "assistant", content: "今天南京多云，气温 18 到 24 度。" },
+        {
+          role: "tool",
+          content: [{ type: "toolcall", name: "weather", arguments: { location: "Nanjing" } }],
+        },
+        {
+          role: "tool",
+          content: [{ type: "toolresult", name: "weather", text: "Cloudy, 18-24C" }],
+        },
+      ],
+    });
+
+    expect(summary).toContain("今天南京天气怎么样");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});

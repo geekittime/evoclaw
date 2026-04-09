@@ -417,6 +417,10 @@ describe("metaclaw controller in native OpenClaw mode", () => {
             messages: [
               { role: "user", content: "Please summarize this discussion." },
               { role: "assistant", content: "Here is the latest result." },
+              {
+                role: "toolresult",
+                content: [{ type: "toolresult", name: "exec", text: "tool output" }],
+              },
             ],
           });
           return {
@@ -448,6 +452,10 @@ describe("metaclaw controller in native OpenClaw mode", () => {
     const result = await compactMetaclawConversationHistory(state, [
       { role: "user", content: "Please summarize this discussion." },
       { role: "assistant", content: "Here is the latest result." },
+      {
+        role: "toolresult",
+        content: [{ type: "toolresult", name: "exec", text: "tool output" }],
+      },
     ]);
 
     expect(result.summary).toBe("Compressed summary text.");

@@ -6,7 +6,7 @@ const DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions";
 const DEEPSEEK_API_KEY = "sk-33021c0bec434de4b877c3142cc409c9";
 const DEEPSEEK_MODEL = "deepseek-chat";
 
-const MAX_SUMMARY_SOURCE_CHARS = 80_000;
+const MAX_SUMMARY_SOURCE_CHARS = 120_000;
 const MAX_MESSAGE_TEXT_CHARS = 6_000;
 const MAX_FALLBACK_SUMMARY_CHARS = 4_000;
 const MAX_TOOL_ARGS_CHARS = 1_200;
@@ -193,17 +193,29 @@ export async function summarizeConversationHistory(params: {
   try {
     return await callDeepSeekSummary({
       system:
-        "You compress conversation history for future continuation. Preserve goals, decisions, constraints, user preferences, selected skills, approvals or denials, file paths, and unresolved next steps. Omit filler. Return a compact structured summary in plain text.",
+        [
+          "You are writing a rich continuation summary for one chat session.",
+          "The transcript can contain user requests, assistant replies, tool calls, and tool results.",
+          "Write a detailed but concise summary that another assistant can continue from immediately.",
+          "Capture the session in natural language, not as a stiff template.",
+          "Include the important user questions, the assistant's key answers, the meaningful tool calls and their results, decisions made, constraints, approvals or denials, important paths or resources, user preferences, and unresolved next steps.",
+          "Do not flatten everything into generic labels like 'Goals' or 'Next steps' unless it genuinely helps clarity.",
+          "Preserve concrete facts from the session when they matter for future work.",
+          "Do not omit tool outcomes if they changed the state of the task.",
+          "Prefer a readable multi-paragraph summary, and use short bullet points only when they genuinely improve clarity.",
+          "Return plain text only.",
+        ].join(" "),
       user: [
         params.instructions?.trim()
           ? `Compression instructions:\n${params.instructions.trim()}`
           : undefined,
+        "Please summarize the full session, including both the conversation itself and the tool execution process.",
         "Conversation transcript:",
         source || "(empty)",
       ]
         .filter(Boolean)
         .join("\n\n"),
-      maxTokens: 900,
+      maxTokens: 1400,
     });
   } catch (error) {
     log.warn(`conversation summary fallback: ${error instanceof Error ? error.message : String(error)}`);

@@ -193,19 +193,14 @@ describe("sessions.promptContext handlers", () => {
     );
   });
 
-  it("compacts the provided visible messages and stores the summary for later prompt injection", async () => {
+  it("compacts the provided visible messages including tool calls and tool results", async () => {
     summarizeConversationHistoryMock.mockImplementation(
       async ({ messages }: { messages: unknown[] }) => {
         expect(messages).toEqual([
           { role: "user", content: "Please inspect the repo and delete stale files." },
           { role: "assistant", content: "I inspected it and identified two stale files." },
-          {
-            role: "assistant",
-            content: [
-              { type: "toolcall", name: "exec", arguments: { command: "ls temp0" } },
-              { type: "toolresult", name: "exec", text: "hi.py\nhh.py\ntemp\n" },
-            ],
-          },
+          { role: "toolresult", content: [{ type: "toolcall", name: "exec", arguments: { command: "ls temp0" } }] },
+          { role: "toolresult", content: [{ type: "toolresult", name: "exec", text: "hi.py\nhh.py\ntemp\n" }] },
         ]);
         return "Goal: clean temp0. Completed: listed files. Pending: confirm deletion of hi.py and hh.py.";
       },
@@ -225,13 +220,8 @@ describe("sessions.promptContext handlers", () => {
         messages: [
           { role: "user", content: "Please inspect the repo and delete stale files." },
           { role: "assistant", content: "I inspected it and identified two stale files." },
-          {
-            role: "assistant",
-            content: [
-              { type: "toolcall", name: "exec", arguments: { command: "ls temp0" } },
-              { type: "toolresult", name: "exec", text: "hi.py\nhh.py\ntemp\n" },
-            ],
-          },
+          { role: "toolresult", content: [{ type: "toolcall", name: "exec", arguments: { command: "ls temp0" } }] },
+          { role: "toolresult", content: [{ type: "toolresult", name: "exec", text: "hi.py\nhh.py\ntemp\n" }] },
         ],
       },
       respond,
