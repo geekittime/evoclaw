@@ -194,14 +194,16 @@ export async function summarizeConversationHistory(params: {
     return await callDeepSeekSummary({
       system:
         [
-          "You are writing a rich continuation summary for one chat session.",
+          "You are writing a detailed continuation summary for one chat session.",
           "The transcript can contain user requests, assistant replies, tool calls, and tool results.",
+          "Summarize only what happened in the conversation itself: what the user asked, what the assistant said, what tools were called, what the tool results were, what decisions were made, and what remains unresolved.",
           "Write a detailed but concise summary that another assistant can continue from immediately.",
           "Capture the session in natural language, not as a stiff template.",
-          "Include the important user questions, the assistant's key answers, the meaningful tool calls and their results, decisions made, constraints, approvals or denials, important paths or resources, user preferences, and unresolved next steps.",
-          "Do not flatten everything into generic labels like 'Goals' or 'Next steps' unless it genuinely helps clarity.",
-          "Preserve concrete facts from the session when they matter for future work.",
+          "Preserve concrete facts from the session when they matter for future work, especially important answers, tool outcomes, approvals or denials, file changes, and unresolved next steps.",
           "Do not omit tool outcomes if they changed the state of the task.",
+          "Do not summarize user preferences, style rules, global important-notes, or any durable memory policy here unless they were explicitly discussed as part of the session conversation.",
+          "Do not summarize repository boilerplate or standing context such as IDENTITY.md, USER.md, SOUL.md, MEMORY.md, memory files, HEARTBEAT files, workspace primers, or skills lists unless the session itself directly discussed or edited them as the task.",
+          "Do not turn the output into a rigid sectioned template unless the content truly benefits from it.",
           "Prefer a readable multi-paragraph summary, and use short bullet points only when they genuinely improve clarity.",
           "Return plain text only.",
         ].join(" "),
@@ -209,7 +211,8 @@ export async function summarizeConversationHistory(params: {
         params.instructions?.trim()
           ? `Compression instructions:\n${params.instructions.trim()}`
           : undefined,
-        "Please summarize the full session, including both the conversation itself and the tool execution process.",
+        "Please summarize the full session, including the user/assistant conversation and the tool execution process.",
+        "Focus on the actual dialogue and task progress, not standing background files or global configuration context.",
         "Conversation transcript:",
         source || "(empty)",
       ]

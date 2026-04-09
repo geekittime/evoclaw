@@ -80,9 +80,11 @@ describe("summarizeConversationHistory", () => {
       expect(body.max_tokens).toBe(1400);
       expect(system).toContain("Write a detailed but concise summary");
       expect(system).toContain("Capture the session in natural language");
-      expect(system).toContain("Include the important user questions");
-      expect(system).toContain("the meaningful tool calls and their results");
-      expect(user).toContain("Please summarize the full session, including both the conversation itself and the tool execution process.");
+      expect(system).toContain("Summarize only what happened in the conversation itself");
+      expect(system).toContain("Do not summarize repository boilerplate or standing context such as IDENTITY.md, USER.md, SOUL.md");
+      expect(system).toContain("Do not summarize user preferences, style rules, global important-notes");
+      expect(user).toContain("Please summarize the full session, including the user/assistant conversation and the tool execution process.");
+      expect(user).toContain("Focus on the actual dialogue and task progress, not standing background files or global configuration context.");
       expect(user).toContain("User: 今天南京天气怎么样？");
       expect(user).toContain("Assistant: 今天南京多云");
       expect(user).toContain("Tool: Tool call: weather");
