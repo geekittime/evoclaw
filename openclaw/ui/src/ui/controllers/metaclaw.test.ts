@@ -121,6 +121,17 @@ describe("metaclaw controller in native OpenClaw mode", () => {
               content: "Compressed summary of the chat so far.",
               has_summary: true,
             },
+            sessionNotes: {
+              session_id: "agent:main:main",
+              content: "Session-local note learned from feedback.",
+              has_notes: true,
+            },
+            taskState: {
+              session_id: "agent:main:main",
+              content: "Current goal: verify memory layering.",
+              has_state: true,
+              source: "manual",
+            },
           };
         case "exec.approvals.get":
           return createExecSnapshot();
@@ -142,6 +153,8 @@ describe("metaclaw controller in native OpenClaw mode", () => {
     expect(state.metaclawSelectedSkillNames).toEqual(["security-triage"]);
     expect(state.metaclawImportantNotes?.content).toContain("Remember the last user preference.");
     expect(state.metaclawContextSummary?.content).toContain("Compressed summary");
+    expect(state.metaclawSessionNotes?.content).toContain("Session-local note");
+    expect(state.metaclawTaskState?.content).toContain("verify memory layering");
     expect(state.metaclawSandboxPolicy).toEqual({
       command_allowlist: ["pwd"],
       path_allowlist: ["/workspace/tmp"],

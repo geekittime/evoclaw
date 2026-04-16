@@ -264,6 +264,17 @@ function createMetaclawProps(
       content: "Compressed summary of the chat so far.",
       has_summary: true,
     },
+    sessionNotes: {
+      session_id: "agent:main:main",
+      content: "Session note learned from feedback.",
+      has_notes: true,
+    },
+    taskState: {
+      session_id: "agent:main:main",
+      content: "Current goal: test layered memory panels.",
+      has_state: true,
+      source: "manual",
+    },
     onApiBaseChange: () => undefined,
     onTokenChange: () => undefined,
     onRefresh: () => undefined,
@@ -1552,6 +1563,10 @@ exec_command: rm -rf new`,
 
       expect(container.textContent).toContain("Compressed History");
       expect(container.textContent).toContain("Compressed summary of the chat so far.");
+      expect(container.textContent).toContain("Session Notes");
+      expect(container.textContent).toContain("Session note learned from feedback.");
+      expect(container.textContent).toContain("Current Task State");
+      expect(container.textContent).toContain("Current goal: test layered memory panels.");
     } finally {
       cleanupChatModuleState();
     }

@@ -38,6 +38,7 @@ describe("session prompt context helpers", () => {
 
     expect(next.feedbackRecords).toHaveLength(2);
     expect(next.feedbackRecords?.at(-1)?.feedback).toBe("Answer should greet first.");
+    expect(next.sessionNotes).toContain("Start with a brief greeting when the user says hi.");
     expect(next.importantNotes).toBe("Existing preference");
     expect(next.importantNotesUpdatedAt).toBeUndefined();
   });
@@ -66,6 +67,8 @@ describe("session prompt context helpers", () => {
     const prompt = buildSessionPromptContextAddition({
       promptContext: {
         selectedSkillNames: ["security-triage", "code-review", "session-rules"],
+        sessionNotes: "This session prefers concise implementation summaries.",
+        taskState: "Current goal: finish the OpenClaw UI integration. Next: run tests.",
         contextSummary: "We already inspected the repo and fixed the build.",
         customSkills: [
           {
@@ -84,6 +87,10 @@ describe("session prompt context helpers", () => {
     expect(prompt).toContain("## Session Custom Skills");
     expect(prompt).toContain("should be treated as active guidance");
     expect(prompt).toContain("Always explain risks before deleting files.");
+    expect(prompt).toContain("## Session Notes");
+    expect(prompt).toContain("This session prefers concise implementation summaries.");
+    expect(prompt).toContain("## Current Task State");
+    expect(prompt).toContain("Next: run tests.");
     expect(prompt).toContain("## Conversation Summary");
     expect(prompt).toContain("fixed the build");
   });

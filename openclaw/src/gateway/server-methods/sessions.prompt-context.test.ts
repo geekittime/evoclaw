@@ -8,6 +8,7 @@ const loadSessionEntryMock = vi.fn();
 const resolveFreshestSessionEntryFromStoreKeysMock = vi.fn();
 const readSessionMessagesMock = vi.fn();
 const summarizeConversationHistoryMock = vi.fn();
+const summarizeTaskStateMock = vi.fn();
 const summarizeFeedbackIntoImportantNoteMock = vi.fn();
 const loadGlobalImportantNotesMock = vi.fn();
 const appendGlobalImportantNoteMock = vi.fn();
@@ -55,6 +56,7 @@ vi.mock("../session-prompt-context.js", async (importOriginal) => {
   return {
     ...actual,
     summarizeConversationHistory: (...args: unknown[]) => summarizeConversationHistoryMock(...args),
+    summarizeTaskState: (...args: unknown[]) => summarizeTaskStateMock(...args),
     summarizeFeedbackIntoImportantNote: (...args: unknown[]) =>
       summarizeFeedbackIntoImportantNoteMock(...args),
   };
@@ -91,6 +93,7 @@ describe("sessions.promptContext handlers", () => {
     resolveFreshestSessionEntryFromStoreKeysMock.mockReset();
     readSessionMessagesMock.mockReset();
     summarizeConversationHistoryMock.mockReset();
+    summarizeTaskStateMock.mockReset();
     summarizeFeedbackIntoImportantNoteMock.mockReset();
     loadGlobalImportantNotesMock.mockReset();
     appendGlobalImportantNoteMock.mockReset();
@@ -170,6 +173,9 @@ describe("sessions.promptContext handlers", () => {
       seedFromLegacyNotes: "Existing durable note",
     });
     expect(sessionEntry.promptContext?.feedbackRecords).toHaveLength(1);
+    expect(sessionEntry.promptContext?.sessionNotes).toContain(
+      "Start with a brief greeting when the user says hi.",
+    );
     expect(sessionEntry.promptContext?.feedbackRecords?.[0]?.instructionText).toBe("hi");
     expect(respond).toHaveBeenCalledWith(
       true,
@@ -187,6 +193,9 @@ describe("sessions.promptContext handlers", () => {
               responseText: "What would you like to work on today?",
             }),
           ]),
+          sessionNotes: expect.objectContaining({
+            content: expect.stringContaining("brief greeting"),
+          }),
         }),
       }),
       undefined,
@@ -203,6 +212,13 @@ describe("sessions.promptContext handlers", () => {
           { role: "toolresult", content: [{ type: "toolresult", name: "exec", text: "hi.py\nhh.py\ntemp\n" }] },
         ]);
         return "Goal: clean temp0. Completed: listed files. Pending: confirm deletion of hi.py and hh.py.";
+      },
+    );
+    summarizeTaskStateMock.mockImplementation(
+      async ({ messages, existingSummary }: { messages: unknown[]; existingSummary?: string }) => {
+        expect(messages).toHaveLength(4);
+        expect(existingSummary).toContain("Goal: clean temp0.");
+        return "Current goal: clean temp0. Done: listed files. Next: approve deletion.";
       },
     );
 
@@ -230,15 +246,21 @@ describe("sessions.promptContext handlers", () => {
 
     expect(sessionEntry.promptContext?.contextSummary).toContain("Goal: clean temp0.");
     expect(sessionEntry.promptContext?.contextSummarySource).toBe("manual");
+    expect(sessionEntry.promptContext?.taskState).toContain("Current goal: clean temp0.");
+    expect(sessionEntry.promptContext?.taskStateSource).toBe("manual");
     expect(respond).toHaveBeenCalledWith(
       true,
       expect.objectContaining({
         ok: true,
         key: "agent:main:main",
         summary: expect.stringContaining("Pending: confirm deletion"),
+        taskState: expect.stringContaining("Current goal: clean temp0."),
         promptContext: expect.objectContaining({
           contextSummary: expect.objectContaining({
             content: expect.stringContaining("Goal: clean temp0."),
+          }),
+          taskState: expect.objectContaining({
+            content: expect.stringContaining("Current goal: clean temp0."),
           }),
         }),
       }),
