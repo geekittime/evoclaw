@@ -87,11 +87,12 @@ import {
   buildSessionPromptContextAddition,
   wrapRuntimeGuidanceForPrompt,
   buildUpdatedPromptContextForSummary,
+  buildUpdatedPromptContextForTaskState,
   resolveSessionSelectedSkillNames,
   shouldAutoRefreshContextSummary,
 } from "../sessions/prompt-context.js";
 import { buildGlobalImportantNotesPromptAddition } from "../sessions/global-important-notes.js";
-import { summarizeConversationHistory } from "../gateway/session-prompt-context.js";
+import { summarizeConversationHistory, summarizeTaskState } from "../gateway/session-prompt-context.js";
 import { readSessionMessages } from "../gateway/session-utils.js";
 
 const log = createSubsystemLogger("agents/agent-command");
@@ -741,19 +742,31 @@ async function agentCommandInternal(
       sessionEntry = resolvedSessionFile.sessionEntry;
     }
     if (sessionEntry && storePath && shouldAutoRefreshContextSummary({ entry: sessionEntry })) {
+      const messages = readSessionMessages(sessionEntry.sessionId, storePath, sessionEntry.sessionFile);
       const summary = await summarizeConversationHistory({
-        messages: readSessionMessages(sessionEntry.sessionId, storePath, sessionEntry.sessionFile),
+        messages,
         instructions:
           "Compress the conversation for continuation inside OpenClaw. Preserve active goals, operator preferences, approvals/denials, files, and unresolved next steps.",
+      });
+      const taskState = await summarizeTaskState({
+        messages,
+        existingSummary: summary,
+        instructions:
+          "Refresh the current task state for continuation inside OpenClaw. Preserve active goals, tool outcomes, approvals/denials, files, blockers, and next steps.",
+      });
+      const withSummary = buildUpdatedPromptContextForSummary({
+        current: sessionEntry.promptContext,
+        summary,
+        source: "auto",
+        tokenCount: sessionEntry.totalTokens,
       });
       const nextEntry: SessionEntry = {
         ...sessionEntry,
         updatedAt: Date.now(),
-        promptContext: buildUpdatedPromptContextForSummary({
-          current: sessionEntry.promptContext,
-          summary,
+        promptContext: buildUpdatedPromptContextForTaskState({
+          current: withSummary,
+          taskState,
           source: "auto",
-          tokenCount: sessionEntry.totalTokens,
         }),
       };
       if (sessionStore && sessionKey) {

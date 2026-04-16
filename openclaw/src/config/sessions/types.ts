@@ -100,10 +100,15 @@ export type SessionPromptContext = {
   selectionCustomized?: boolean;
   importantNotes?: string;
   importantNotesUpdatedAt?: number;
+  sessionNotes?: string;
+  sessionNotesUpdatedAt?: number;
   contextSummary?: string;
   contextSummaryUpdatedAt?: number;
   contextSummarySource?: "manual" | "auto";
   contextSummaryTokenCount?: number;
+  taskState?: string;
+  taskStateUpdatedAt?: number;
+  taskStateSource?: "manual" | "auto";
   feedbackRecords?: SessionFeedbackRecord[];
   skillSelectionHistory?: SessionSkillSelectionRecord[];
   customSkills?: SessionCustomSkillRecord[];

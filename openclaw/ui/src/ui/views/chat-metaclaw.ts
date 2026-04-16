@@ -9,6 +9,8 @@ import type {
   MetaclawContextSummary,
   MetaclawFeedbackResponse,
   MetaclawSectionState,
+  MetaclawSessionNotes,
+  MetaclawTaskState,
 } from "../controllers/metaclaw.ts";
 import { icons } from "../icons.ts";
 import type { MessageGroup } from "../types/chat-types.ts";
@@ -50,6 +52,8 @@ export type ChatMetaclawProps = {
   latestInjectedSkills: string[];
   importantNotes: { name: string; description: string; content: string } | null;
   contextSummary: MetaclawContextSummary | null;
+  sessionNotes: MetaclawSessionNotes | null;
+  taskState: MetaclawTaskState | null;
   onApiBaseChange: (value: string) => void;
   onTokenChange: (value: string) => void;
   onRefresh: () => void;
@@ -1129,6 +1133,50 @@ ${props.importantNotes?.content ?? "No important notes yet."}</pre
   `;
 }
 
+function renderSessionNotesPanel(props: ChatMetaclawProps): TemplateResult {
+  const notes = props.sessionNotes?.content?.trim() ?? "";
+  return html`
+    <section class="metaclaw-panel metaclaw-panel--notes">
+      <div class="metaclaw-panel__head">
+        <div>
+          <div class="metaclaw-panel__title">Session Notes</div>
+          <div class="metaclaw-panel__sub">
+            Feedback-derived notes for this session. These are lower priority than global important-notes.
+          </div>
+        </div>
+        <span class="metaclaw-status-pill metaclaw-status-pill--${notes ? "ready" : "idle"}">
+          ${notes ? "Active" : "Empty"}
+        </span>
+      </div>
+      <pre class="metaclaw-notes">
+${notes || "No session-local notes have been learned yet."}</pre
+      >
+    </section>
+  `;
+}
+
+function renderTaskStatePanel(props: ChatMetaclawProps): TemplateResult {
+  const taskState = props.taskState?.content?.trim() ?? "";
+  return html`
+    <section class="metaclaw-panel metaclaw-panel--notes">
+      <div class="metaclaw-panel__head">
+        <div>
+          <div class="metaclaw-panel__title">Current Task State</div>
+          <div class="metaclaw-panel__sub">
+            Working memory for the active task: completed steps, tool results, blockers, and next actions.
+          </div>
+        </div>
+        <span class="metaclaw-status-pill metaclaw-status-pill--${taskState ? "ready" : "idle"}">
+          ${taskState ? props.taskState?.source ?? "Active" : "Empty"}
+        </span>
+      </div>
+      <pre class="metaclaw-notes">
+${taskState || "No task state has been stored for this session yet."}</pre
+      >
+    </section>
+  `;
+}
+
 function renderContextSummaryPanel(props: ChatMetaclawProps): TemplateResult {
   const summary = props.contextSummary?.content?.trim() ?? "";
   return html`
@@ -1257,7 +1305,8 @@ export function renderMetaclawStudio(
                 viewState,
                 requestUpdate,
               )}
-              ${renderNotesPanel(props)} ${renderContextSummaryPanel(props)}
+              ${renderNotesPanel(props)} ${renderSessionNotesPanel(props)}
+              ${renderTaskStatePanel(props)} ${renderContextSummaryPanel(props)}
             </div>
           </section>
         `

@@ -225,3 +225,42 @@ export async function summarizeConversationHistory(params: {
     return fallback;
   }
 }
+
+export async function summarizeTaskState(params: {
+  messages: unknown[];
+  existingSummary?: string;
+  instructions?: string;
+}): Promise<string> {
+  const source = formatConversationForSummary(params.messages);
+  const fallback = trimText(params.existingSummary) ?? fallbackConversationSummary(params.messages);
+  try {
+    return await callDeepSeekSummary({
+      system:
+        [
+          "You maintain the current TASK STATE for a personal OpenClaw agent session.",
+          "Summarize only actionable state needed to continue the current task.",
+          "Include current user goal, completed steps, important tool results, files or paths touched, approvals or denials, current blockers, and the likely next step.",
+          "Do not include stable user preferences, global important-notes, skill lists, identity files, or general background unless they are directly part of the active task.",
+          "Keep it concise, concrete, and update-oriented.",
+          "Return plain text only.",
+        ].join(" "),
+      user: [
+        params.instructions?.trim()
+          ? `Task-state instructions:\n${params.instructions.trim()}`
+          : undefined,
+        params.existingSummary?.trim()
+          ? `Existing session summary:\n${params.existingSummary.trim()}`
+          : undefined,
+        "Conversation and tool transcript:",
+        source || "(empty)",
+        "Write the current task state for the next turn.",
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
+      maxTokens: 700,
+    });
+  } catch (error) {
+    log.warn(`task state summary fallback: ${error instanceof Error ? error.message : String(error)}`);
+    return fallback;
+  }
+}

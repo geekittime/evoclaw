@@ -1589,6 +1589,8 @@ export function renderApp(state: AppViewState) {
                     latestInjectedSkills: state.metaclawLatestInjectedSkills,
                     importantNotes: state.metaclawImportantNotes,
                     contextSummary: state.metaclawContextSummary,
+                    sessionNotes: state.metaclawSessionNotes,
+                    taskState: state.metaclawTaskState,
                     sections: state.metaclawSections,
                     onApiBaseChange: (value) => (state.metaclawApiBase = value),
                     onTokenChange: (value) => (state.metaclawToken = value),

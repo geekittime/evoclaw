@@ -32,6 +32,21 @@ export type MetaclawContextSummary = {
   has_summary: boolean;
 };
 
+export type MetaclawSessionNotes = {
+  session_id: string;
+  content: string;
+  has_notes: boolean;
+  updated_at?: number | null;
+};
+
+export type MetaclawTaskState = {
+  session_id: string;
+  content: string;
+  has_state: boolean;
+  source?: "manual" | "auto" | null;
+  updated_at?: number | null;
+};
+
 export type MetaclawSkillsPayload = {
   skills: MetaclawSkillEntry[];
   selection_customized: boolean;
@@ -39,6 +54,8 @@ export type MetaclawSkillsPayload = {
   latest_injected_skills: string[];
   important_notes: MetaclawImportantNotes;
   context_summary?: MetaclawContextSummary | null;
+  session_notes?: MetaclawSessionNotes | null;
+  task_state?: MetaclawTaskState | null;
 };
 
 export type MetaclawPendingApproval = {
@@ -122,6 +139,8 @@ export type MetaclawState = {
   metaclawLatestInjectedSkills: string[];
   metaclawImportantNotes: MetaclawImportantNotes | null;
   metaclawContextSummary: MetaclawContextSummary | null;
+  metaclawSessionNotes: MetaclawSessionNotes | null;
+  metaclawTaskState: MetaclawTaskState | null;
   metaclawPendingApprovals: MetaclawPendingApproval[];
   metaclawSandboxPolicy: MetaclawSandboxPolicy | null;
   metaclawSections: MetaclawSectionsState;
@@ -136,6 +155,8 @@ type SessionsPromptContextGetResult = {
   latestInjectedSkills?: string[];
   importantNotes?: MetaclawImportantNotes | null;
   contextSummary?: MetaclawContextSummary | null;
+  sessionNotes?: MetaclawSessionNotes | null;
+  taskState?: MetaclawTaskState | null;
   feedbackRecords?: unknown[];
   skillSelectionHistory?: unknown[];
   customSkills?: MetaclawSkillEntry[];
@@ -414,6 +435,8 @@ function updateSkillsState(state: MetaclawState, payload: MetaclawSkillsPayload)
     : [];
   state.metaclawImportantNotes = payload.important_notes ?? null;
   state.metaclawContextSummary = payload.context_summary ?? null;
+  state.metaclawSessionNotes = payload.session_notes ?? null;
+  state.metaclawTaskState = payload.task_state ?? null;
 }
 
 function mergeVisibleSkills(
@@ -659,6 +682,8 @@ export async function loadMetaclawState(state: MetaclawState) {
         : [];
       state.metaclawImportantNotes = promptContextResult.value.importantNotes ?? null;
       state.metaclawContextSummary = promptContextResult.value.contextSummary ?? null;
+      state.metaclawSessionNotes = promptContextResult.value.sessionNotes ?? null;
+      state.metaclawTaskState = promptContextResult.value.taskState ?? null;
       sections.skills = createSectionState("ready");
       connected = true;
     } else {
@@ -771,6 +796,8 @@ export async function compactMetaclawConversationHistory(
       session_id: string;
       summary: string;
       has_summary: boolean;
+      taskState?: string;
+      has_task_state?: boolean;
     }>("sessions.promptContext.compact", {
       key: state.sessionKey,
       source: "manual",
@@ -785,6 +812,14 @@ export async function compactMetaclawConversationHistory(
       content: result.summary,
       has_summary: result.has_summary,
     };
+    if (typeof result.taskState === "string") {
+      state.metaclawTaskState = {
+        session_id: result.session_id,
+        content: result.taskState,
+        has_state: result.has_task_state === true,
+        source: "manual",
+      };
+    }
     await loadMetaclawState(state);
     return result;
   } catch (error) {

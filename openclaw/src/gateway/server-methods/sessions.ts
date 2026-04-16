@@ -58,11 +58,13 @@ import {
 import {
   summarizeConversationHistory,
   summarizeFeedbackIntoImportantNote,
+  summarizeTaskState,
 } from "../session-prompt-context.js";
 import {
   buildUpdatedPromptContextForCustomSkillAdd,
   buildUpdatedPromptContextForSkillSelection,
   buildUpdatedPromptContextForSummary,
+  buildUpdatedPromptContextForTaskState,
   buildUpdatedPromptContextFromFeedback,
   describeSessionCustomSkill,
   getSessionPromptContext,
@@ -147,6 +149,23 @@ function buildPromptContextResponse(params: {
           session_id: params.entry?.sessionId ?? params.key,
           content: promptContext.contextSummary,
           has_summary: true,
+        }
+      : null,
+    sessionNotes: promptContext?.sessionNotes?.trim()
+      ? {
+          session_id: params.entry?.sessionId ?? params.key,
+          content: promptContext.sessionNotes,
+          has_notes: true,
+          updated_at: promptContext.sessionNotesUpdatedAt ?? null,
+        }
+      : null,
+    taskState: promptContext?.taskState?.trim()
+      ? {
+          session_id: params.entry?.sessionId ?? params.key,
+          content: promptContext.taskState,
+          has_state: true,
+          source: promptContext.taskStateSource ?? null,
+          updated_at: promptContext.taskStateUpdatedAt ?? null,
         }
       : null,
     feedbackRecords: promptContext?.feedbackRecords ?? [],
@@ -1516,20 +1535,35 @@ export const sessionsHandlers: GatewayRequestHandlers = {
             ? (params as { instructions: string }).instructions
             : undefined,
       });
+      const taskState = await summarizeTaskState({
+        messages,
+        existingSummary: summary,
+        instructions:
+          typeof (params as { instructions?: unknown }).instructions === "string"
+            ? (params as { instructions: string }).instructions
+            : undefined,
+      });
       const source =
         (params as { source?: "manual" | "auto" }).source === "auto" ? "auto" : "manual";
       const updated = await updateSessionPromptContext({
         key: canonicalKey,
-        mutate: (current) => ({
-          ...(current ?? entry),
-          updatedAt: Date.now(),
-          promptContext: buildUpdatedPromptContextForSummary({
+        mutate: (current) => {
+          const withSummary = buildUpdatedPromptContextForSummary({
             current: current?.promptContext ?? entry.promptContext,
             summary,
             source,
             tokenCount: entry.totalTokens,
-          }),
-        }),
+          });
+          return {
+            ...(current ?? entry),
+            updatedAt: Date.now(),
+            promptContext: buildUpdatedPromptContextForTaskState({
+              current: withSummary,
+              taskState,
+              source,
+            }),
+          };
+        },
       });
       respond(
         true,
@@ -1539,6 +1573,8 @@ export const sessionsHandlers: GatewayRequestHandlers = {
           session_id: updated.entry.sessionId,
           summary,
           has_summary: Boolean(summary.trim()),
+          taskState,
+          has_task_state: Boolean(taskState.trim()),
           source,
           promptContext: buildPromptContextResponse({ key: updated.key, entry: updated.entry }),
         },

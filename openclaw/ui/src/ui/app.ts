@@ -83,7 +83,9 @@ import type {
   MetaclawImportantNotes,
   MetaclawPendingApproval,
   MetaclawSandboxPolicy,
+  MetaclawSessionNotes,
   MetaclawSkillEntry,
+  MetaclawTaskState,
 } from "./controllers/metaclaw.ts";
 import type { SkillMessage } from "./controllers/skills.ts";
 import type { GatewayBrowserClient, GatewayHelloOk } from "./gateway.ts";
@@ -457,6 +459,8 @@ export class OpenClawApp extends LitElement {
   @state() metaclawLatestInjectedSkills: string[] = [];
   @state() metaclawImportantNotes: MetaclawImportantNotes | null = null;
   @state() metaclawContextSummary: MetaclawContextSummary | null = null;
+  @state() metaclawSessionNotes: MetaclawSessionNotes | null = null;
+  @state() metaclawTaskState: MetaclawTaskState | null = null;
   @state() metaclawPendingApprovals: MetaclawPendingApproval[] = [];
   @state() metaclawSandboxPolicy: MetaclawSandboxPolicy | null = null;
   @state() metaclawSections = createInitialMetaclawSectionsState();

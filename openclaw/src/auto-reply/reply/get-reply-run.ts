@@ -17,6 +17,7 @@ import {
   buildSessionPromptContextAddition,
   wrapRuntimeGuidanceForPrompt,
   buildUpdatedPromptContextForSummary,
+  buildUpdatedPromptContextForTaskState,
   resolveSessionSelectedSkillNames,
   shouldAutoRefreshContextSummary,
 } from "../../sessions/prompt-context.js";
@@ -52,7 +53,7 @@ import { resolveTypingMode } from "./typing-mode.js";
 import { resolveRunTypingPolicy } from "./typing-policy.js";
 import type { TypingController } from "./typing.js";
 import { appendUntrustedContext } from "./untrusted-context.js";
-import { summarizeConversationHistory } from "../../gateway/session-prompt-context.js";
+import { summarizeConversationHistory, summarizeTaskState } from "../../gateway/session-prompt-context.js";
 import { readSessionMessages } from "../../gateway/session-utils.js";
 
 type AgentDefaults = NonNullable<OpenClawConfig["agents"]>["defaults"];
@@ -448,16 +449,28 @@ export async function runPreparedReply(
     sessionKey &&
     shouldAutoRefreshContextSummary({ entry: sessionEntry })
   ) {
+    const messages = readSessionMessages(sessionEntry.sessionId, storePath, sessionEntry.sessionFile);
     const summary = await summarizeConversationHistory({
-      messages: readSessionMessages(sessionEntry.sessionId, storePath, sessionEntry.sessionFile),
+      messages,
       instructions:
         "Compress the conversation for continuation inside OpenClaw. Preserve active goals, operator preferences, approvals/denials, files, and unresolved next steps.",
     });
-    const promptContext = buildUpdatedPromptContextForSummary({
+    const taskState = await summarizeTaskState({
+      messages,
+      existingSummary: summary,
+      instructions:
+        "Refresh the current task state for continuation inside OpenClaw. Preserve active goals, tool outcomes, approvals/denials, files, blockers, and next steps.",
+    });
+    const withSummary = buildUpdatedPromptContextForSummary({
       current: sessionEntry.promptContext,
       summary,
       source: "auto",
       tokenCount: sessionEntry.totalTokens,
+    });
+    const promptContext = buildUpdatedPromptContextForTaskState({
+      current: withSummary,
+      taskState,
+      source: "auto",
     });
     sessionEntry = {
       ...sessionEntry,

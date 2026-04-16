@@ -8,6 +8,8 @@ import { matchesSkillFilter, normalizeSkillFilter } from "../agents/skills/filte
 
 export const SESSION_CONTEXT_SUMMARY_TOKEN_THRESHOLD = 200_000;
 const MAX_CONTEXT_SUMMARY_CHARS = 16_000;
+const MAX_SESSION_NOTES_CHARS = 10_000;
+const MAX_TASK_STATE_CHARS = 8_000;
 const MAX_SESSION_FEEDBACK_RECORDS = 48;
 const MAX_SKILL_SELECTION_HISTORY = 32;
 const MAX_CUSTOM_SKILLS = 32;
@@ -20,6 +22,8 @@ const LEGACY_RUNTIME_GUIDANCE_BLOCK_PREFIXES = [
   "## Important Notes (High Priority)",
   "## Enabled Session Skills",
   "## Session Custom Skills",
+  "## Session Notes",
+  "## Current Task State",
   "## Conversation Summary",
   "## Additional Runtime Context",
   "## Group Chat Context",
@@ -91,6 +95,33 @@ function clampTail(value: string, maxChars: number): string {
     return value;
   }
   return value.slice(value.length - maxChars);
+}
+
+function splitNonEmptyLines(value: string): string[] {
+  return value
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function appendDedupedLines(params: {
+  current?: string;
+  addition?: string;
+  maxChars: number;
+}): string | undefined {
+  const lines = splitNonEmptyLines(params.current ?? "");
+  const seen = new Set(lines.map((line) => line.toLowerCase()));
+  for (const line of splitNonEmptyLines(params.addition ?? "")) {
+    const key = line.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    lines.push(line);
+  }
+  const joined = lines.join("\n");
+  const clamped = clampTail(joined, params.maxChars).trim();
+  return clamped || undefined;
 }
 
 function normalizeCustomSkillName(value: string | undefined): string | undefined {
@@ -207,6 +238,8 @@ export function buildSessionPromptContextAddition(
 ): string | undefined {
   const selectedSkillNames = resolveSessionSelectedSkillNames(entry) ?? [];
   const selectedCustomSkills = resolveSelectedSessionCustomSkills(entry);
+  const sessionNotes = trimOptionalText(entry?.promptContext?.sessionNotes);
+  const taskState = trimOptionalText(entry?.promptContext?.taskState);
   const contextSummary = trimOptionalText(entry?.promptContext?.contextSummary);
   const sections: string[] = [];
   if (selectedSkillNames.length > 0) {
@@ -226,6 +259,24 @@ export function buildSessionPromptContextAddition(
         "These custom skills were added by the operator for this session and should be treated as active guidance.",
         ...selectedCustomSkills.map((skill) => `### ${skill.name}\n${skill.content}`),
       ].join("\n\n"),
+    );
+  }
+  if (sessionNotes) {
+    sections.push(
+      [
+        "## Session Notes",
+        "These notes were learned inside this session and are lower priority than global Important Notes.",
+        sessionNotes,
+      ].join("\n"),
+    );
+  }
+  if (taskState) {
+    sections.push(
+      [
+        "## Current Task State",
+        "Use this as the working state for the current session. Keep it consistent with newer user messages and tool results.",
+        taskState,
+      ].join("\n"),
     );
   }
   if (contextSummary) {
@@ -249,14 +300,21 @@ export function buildUpdatedPromptContextFromFeedback(params: {
   record: SessionFeedbackRecord;
   noteSummary?: string;
 }): SessionPromptContext {
-  void params.noteSummary;
   const nextFeedbackRecords = [
     ...(params.current?.feedbackRecords ?? []),
     params.record,
   ].slice(-MAX_SESSION_FEEDBACK_RECORDS);
+  const sessionNotes = appendDedupedLines({
+    current: params.current?.sessionNotes,
+    addition: params.noteSummary,
+    maxChars: MAX_SESSION_NOTES_CHARS,
+  });
+  const updatedAt = params.record.createdAt || Date.now();
 
   return {
     ...params.current,
+    sessionNotes,
+    sessionNotesUpdatedAt: sessionNotes ? updatedAt : params.current?.sessionNotesUpdatedAt,
     feedbackRecords: nextFeedbackRecords,
   };
 }
@@ -335,6 +393,22 @@ export function buildUpdatedPromptContextForSummary(params: {
       typeof params.tokenCount === "number" && Number.isFinite(params.tokenCount) && params.tokenCount > 0
         ? Math.floor(params.tokenCount)
         : params.current?.contextSummaryTokenCount,
+  };
+}
+
+export function buildUpdatedPromptContextForTaskState(params: {
+  current?: SessionPromptContext;
+  taskState: string;
+  source: "manual" | "auto";
+  updatedAt?: number;
+}): SessionPromptContext {
+  const updatedAt = params.updatedAt ?? Date.now();
+  const taskState = clampTail(params.taskState.trim(), MAX_TASK_STATE_CHARS);
+  return {
+    ...params.current,
+    taskState: taskState || undefined,
+    taskStateUpdatedAt: taskState ? updatedAt : params.current?.taskStateUpdatedAt,
+    taskStateSource: taskState ? params.source : params.current?.taskStateSource,
   };
 }
 

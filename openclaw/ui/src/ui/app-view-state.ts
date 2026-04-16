@@ -10,7 +10,9 @@ import type {
   MetaclawPendingApproval,
   MetaclawSectionsState,
   MetaclawSandboxPolicy,
+  MetaclawSessionNotes,
   MetaclawSkillEntry,
+  MetaclawTaskState,
 } from "./controllers/metaclaw.ts";
 import type { SkillMessage } from "./controllers/skills.ts";
 import type { GatewayBrowserClient, GatewayHelloOk } from "./gateway.ts";
@@ -123,6 +125,8 @@ export type AppViewState = {
   metaclawLatestInjectedSkills: string[];
   metaclawImportantNotes: MetaclawImportantNotes | null;
   metaclawContextSummary: MetaclawContextSummary | null;
+  metaclawSessionNotes: MetaclawSessionNotes | null;
+  metaclawTaskState: MetaclawTaskState | null;
   metaclawPendingApprovals: MetaclawPendingApproval[];
   metaclawSandboxPolicy: MetaclawSandboxPolicy | null;
   metaclawSections: MetaclawSectionsState;
