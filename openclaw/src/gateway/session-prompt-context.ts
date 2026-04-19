@@ -66,6 +66,9 @@ function stringifyMessage(message: unknown): string | null {
   }
   const entry = message as Record<string, unknown>;
   const role = typeof entry.role === "string" ? entry.role.trim().toLowerCase() : "other";
+  if (role === "system") {
+    return null;
+  }
   const text = trimText(
     typeof entry.text === "string" ? entry.text : extractMessageText(entry.content),
   );
@@ -194,17 +197,19 @@ export async function summarizeConversationHistory(params: {
     return await callDeepSeekSummary({
       system:
         [
-          "You are writing a detailed continuation summary for one chat session.",
+          "You are writing a continuation summary for one chat session.",
           "The transcript can contain user requests, assistant replies, tool calls, and tool results.",
-          "Summarize only what happened in the conversation itself: what the user asked, what the assistant said, what tools were called, what the tool results were, what decisions were made, and what remains unresolved.",
-          "Write a detailed but concise summary that another assistant can continue from immediately.",
-          "Capture the session in natural language, not as a stiff template.",
-          "Preserve concrete facts from the session when they matter for future work, especially important answers, tool outcomes, approvals or denials, file changes, and unresolved next steps.",
+          "Summarize only the main task-relevant interaction: what the user asked for, what the assistant concluded or attempted, what tools were called, what the meaningful tool results were, what decisions were made, and what remains unresolved.",
+          "Write a concise but sufficiently informative summary that another assistant can continue from immediately.",
+          "Focus on the main task thread and the most important turns, not every minor exchange.",
+          "Preserve concrete facts from the session when they matter for future work, especially important answers, meaningful tool outcomes, approvals or denials, file changes, and unresolved next steps.",
           "Do not omit tool outcomes if they changed the state of the task.",
+          "Do not retain low-signal detail such as repeated confirmations, routine phrasing, boilerplate, exhaustive command arguments, or long raw outputs unless they materially affect the task state.",
+          "Compress repetitive tool chatter into a short description instead of replaying every small step.",
           "Do not summarize user preferences, style rules, global important-notes, or any durable memory policy here unless they were explicitly discussed as part of the session conversation.",
           "Do not summarize repository boilerplate or standing context such as IDENTITY.md, USER.md, SOUL.md, MEMORY.md, memory files, HEARTBEAT files, workspace primers, or skills lists unless the session itself directly discussed or edited them as the task.",
           "Do not turn the output into a rigid sectioned template unless the content truly benefits from it.",
-          "Prefer a readable multi-paragraph summary, and use short bullet points only when they genuinely improve clarity.",
+          "Prefer 1 to 3 readable paragraphs. Use short bullets only if unresolved next steps are clearer that way.",
           "Return plain text only.",
         ].join(" "),
       user: [

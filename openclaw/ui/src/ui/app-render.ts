@@ -1591,6 +1591,7 @@ export function renderApp(state: AppViewState) {
                     contextSummary: state.metaclawContextSummary,
                     sessionNotes: state.metaclawSessionNotes,
                     taskState: state.metaclawTaskState,
+                    memoryOs: state.metaclawMemoryOs,
                     sections: state.metaclawSections,
                     onApiBaseChange: (value) => (state.metaclawApiBase = value),
                     onTokenChange: (value) => (state.metaclawToken = value),

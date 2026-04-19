@@ -85,6 +85,7 @@ function createState(
     metaclawLatestInjectedSkills: [],
     metaclawImportantNotes: null,
     metaclawContextSummary: null,
+    metaclawMemoryOs: null,
     metaclawPendingApprovals: [],
     metaclawSandboxPolicy: null,
     metaclawSections: createInitialMetaclawSectionsState(),
@@ -132,6 +133,14 @@ describe("metaclaw controller in native OpenClaw mode", () => {
               has_state: true,
               source: "manual",
             },
+            memoryOs: {
+              session_id: "agent:main:main",
+              short_term_page_count: 2,
+              mid_term_segment_count: 1,
+              long_term_note_count: 4,
+              latest_segment_title: "verify memory layering",
+              latest_segment_summary: "Recent segment summary",
+            },
           };
         case "exec.approvals.get":
           return createExecSnapshot();
@@ -155,6 +164,7 @@ describe("metaclaw controller in native OpenClaw mode", () => {
     expect(state.metaclawContextSummary?.content).toContain("Compressed summary");
     expect(state.metaclawSessionNotes?.content).toContain("Session-local note");
     expect(state.metaclawTaskState?.content).toContain("verify memory layering");
+    expect(state.metaclawMemoryOs?.short_term_page_count).toBe(2);
     expect(state.metaclawSandboxPolicy).toEqual({
       command_allowlist: ["pwd"],
       path_allowlist: ["/workspace/tmp"],
@@ -171,6 +181,32 @@ describe("metaclaw controller in native OpenClaw mode", () => {
   it("falls back to empty local state when the OpenClaw gateway is disconnected", async () => {
     const state = createState({
       connected: false,
+      metaclawImportantNotes: {
+        name: "important-notes",
+        description: "stale",
+        content: "stale note",
+      },
+      metaclawContextSummary: {
+        session_id: "agent:main:main",
+        content: "stale summary",
+        has_summary: true,
+      },
+      metaclawSessionNotes: {
+        session_id: "agent:main:main",
+        content: "stale session note",
+        has_notes: true,
+      },
+      metaclawTaskState: {
+        session_id: "agent:main:main",
+        content: "stale task state",
+        has_state: true,
+      },
+      metaclawMemoryOs: {
+        session_id: "agent:main:main",
+        short_term_page_count: 3,
+        mid_term_segment_count: 2,
+        long_term_note_count: 8,
+      },
       execApprovalQueue: [createExecApproval("appr-offline", "pwd", 1_000)],
     });
 
@@ -178,10 +214,69 @@ describe("metaclaw controller in native OpenClaw mode", () => {
 
     expect(state.metaclawConnected).toBe(false);
     expect(state.metaclawError).toBeNull();
+    expect(state.metaclawImportantNotes).toBeNull();
+    expect(state.metaclawContextSummary).toBeNull();
+    expect(state.metaclawSessionNotes).toBeNull();
+    expect(state.metaclawTaskState).toBeNull();
+    expect(state.metaclawMemoryOs).toBeNull();
     expect(state.metaclawSections).toEqual(createInitialMetaclawSectionsState());
     expect(state.metaclawPendingApprovals.map((item) => item.approval_id)).toEqual([
       "appr-offline",
     ]);
+  });
+
+  it("clears stale prompt-context memory when prompt-context loading fails", async () => {
+    const state = createState(
+      {
+        metaclawImportantNotes: {
+          name: "important-notes",
+          description: "stale",
+          content: "stale note",
+        },
+        metaclawContextSummary: {
+          session_id: "agent:main:main",
+          content: "stale summary",
+          has_summary: true,
+        },
+        metaclawSessionNotes: {
+          session_id: "agent:main:main",
+          content: "stale session note",
+          has_notes: true,
+        },
+        metaclawTaskState: {
+          session_id: "agent:main:main",
+          content: "stale task state",
+          has_state: true,
+        },
+        metaclawMemoryOs: {
+          session_id: "agent:main:main",
+          short_term_page_count: 3,
+          mid_term_segment_count: 2,
+          long_term_note_count: 8,
+        },
+      },
+      async (method) => {
+        switch (method) {
+          case "skills.status":
+            return { skills: [] };
+          case "sessions.promptContext.get":
+            throw new Error("prompt-context failed");
+          case "exec.approvals.get":
+            return createExecSnapshot();
+          default:
+            throw new Error(`Unexpected request: ${method}`);
+        }
+      },
+    );
+
+    await loadMetaclawState(state);
+
+    expect(state.metaclawImportantNotes).toBeNull();
+    expect(state.metaclawContextSummary).toBeNull();
+    expect(state.metaclawSessionNotes).toBeNull();
+    expect(state.metaclawTaskState).toBeNull();
+    expect(state.metaclawMemoryOs).toBeNull();
+    expect(state.metaclawSections.skills.status).toBe("error");
   });
 
   it("surfaces only the newest exec approval for the current session", async () => {

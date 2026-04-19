@@ -259,6 +259,14 @@ function createMetaclawProps(
       description: "Persistent notes",
       content: "Remember the last user preference.",
     },
+    memoryOs: {
+      session_id: "agent:main:main",
+      short_term_page_count: 2,
+      mid_term_segment_count: 1,
+      long_term_note_count: 4,
+      latest_segment_title: "verify memory layering",
+      latest_segment_summary: "Recent segment summary",
+    },
     contextSummary: {
       session_id: "agent:main:main",
       content: "Compressed summary of the chat so far.",
@@ -381,6 +389,41 @@ describe("chat view", () => {
 
     expect(container.textContent).not.toContain("context used");
     expect(container.textContent).not.toContain("757.3k / 200k");
+  });
+
+  it("renders the Memory OS panel in Session Studio", async () => {
+    const container = document.createElement("div");
+    cleanupChatModuleState();
+    try {
+      const props = createProps({
+        metaclaw: createMetaclawProps(),
+      });
+
+      const rerender = () => {
+        render(
+          renderChat({
+            ...props,
+            onRequestUpdate: rerender,
+          }),
+          container,
+        );
+      };
+
+      rerender();
+      const openButton = Array.from(container.querySelectorAll("button")).find((button) =>
+        button.textContent?.includes("Show Session Studio"),
+      );
+      expect(openButton).not.toBeUndefined();
+      openButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flushTasks();
+
+      expect(container.textContent).toContain("Memory OS");
+      expect(container.textContent).toContain("STM pages");
+      expect(container.textContent).toContain("MTM segments");
+      expect(container.textContent).toContain("LTM notes");
+    } finally {
+      cleanupChatModuleState();
+    }
   });
 
   it("uses totalTokens for the context notice detail when current usage is high", () => {

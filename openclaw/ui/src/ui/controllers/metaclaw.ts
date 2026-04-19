@@ -47,6 +47,16 @@ export type MetaclawTaskState = {
   updated_at?: number | null;
 };
 
+export type MetaclawMemoryOsSnapshot = {
+  session_id: string;
+  short_term_page_count: number;
+  mid_term_segment_count: number;
+  long_term_note_count: number;
+  latest_segment_title?: string | null;
+  latest_segment_summary?: string | null;
+  latest_updated_at?: number | null;
+};
+
 export type MetaclawSkillsPayload = {
   skills: MetaclawSkillEntry[];
   selection_customized: boolean;
@@ -141,6 +151,7 @@ export type MetaclawState = {
   metaclawContextSummary: MetaclawContextSummary | null;
   metaclawSessionNotes: MetaclawSessionNotes | null;
   metaclawTaskState: MetaclawTaskState | null;
+  metaclawMemoryOs: MetaclawMemoryOsSnapshot | null;
   metaclawPendingApprovals: MetaclawPendingApproval[];
   metaclawSandboxPolicy: MetaclawSandboxPolicy | null;
   metaclawSections: MetaclawSectionsState;
@@ -157,6 +168,7 @@ type SessionsPromptContextGetResult = {
   contextSummary?: MetaclawContextSummary | null;
   sessionNotes?: MetaclawSessionNotes | null;
   taskState?: MetaclawTaskState | null;
+  memoryOs?: MetaclawMemoryOsSnapshot | null;
   feedbackRecords?: unknown[];
   skillSelectionHistory?: unknown[];
   customSkills?: MetaclawSkillEntry[];
@@ -212,6 +224,14 @@ function createSectionState(
   message: string | null = null,
 ): MetaclawSectionState {
   return { status, message };
+}
+
+function resetPromptContextState(state: MetaclawState) {
+  state.metaclawImportantNotes = null;
+  state.metaclawContextSummary = null;
+  state.metaclawSessionNotes = null;
+  state.metaclawTaskState = null;
+  state.metaclawMemoryOs = null;
 }
 
 export function createInitialMetaclawSectionsState(): MetaclawSectionsState {
@@ -628,6 +648,7 @@ export async function loadMetaclawState(state: MetaclawState) {
     state.metaclawLoading = false;
     state.metaclawConnected = false;
     state.metaclawError = null;
+    resetPromptContextState(state);
     state.metaclawSections = createInitialMetaclawSectionsState();
     state.metaclawPendingApprovals = mapExecApprovalQueueForSession(
       state.execApprovalQueue,
@@ -684,9 +705,11 @@ export async function loadMetaclawState(state: MetaclawState) {
       state.metaclawContextSummary = promptContextResult.value.contextSummary ?? null;
       state.metaclawSessionNotes = promptContextResult.value.sessionNotes ?? null;
       state.metaclawTaskState = promptContextResult.value.taskState ?? null;
+      state.metaclawMemoryOs = promptContextResult.value.memoryOs ?? null;
       sections.skills = createSectionState("ready");
       connected = true;
     } else {
+      resetPromptContextState(state);
       const requestError = toMetaclawRequestError(
         skillsStatusResult.status === "rejected" ? skillsStatusResult.reason : promptContextResult.reason,
       );
@@ -803,7 +826,7 @@ export async function compactMetaclawConversationHistory(
       source: "manual",
       instructions:
         Array.isArray(messages) && messages.length > 0
-          ? "Summarize the current chat for future continuation while keeping goals, files, approvals, and user preferences."
+          ? "Summarize only the actual session dialogue and task execution for future continuation. Keep user requests, assistant replies, approvals or denials, tool calls, tool results, file changes, and unresolved next steps."
           : undefined,
       messages: Array.isArray(messages) ? messages : [],
     });

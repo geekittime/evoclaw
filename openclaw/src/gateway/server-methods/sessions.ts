@@ -76,6 +76,11 @@ import {
   loadGlobalImportantNotes,
 } from "../../sessions/global-important-notes.js";
 import {
+  getMemoryOsSessionSnapshot,
+  updateMemoryOsFromConversation,
+  updateMemoryOsFromFeedback,
+} from "../../sessions/memory-os.js";
+import {
   archiveSessionTranscriptsForSession,
   cleanupSessionBeforeMutation,
   emitSessionUnboundLifecycleEvent,
@@ -176,6 +181,9 @@ function buildPromptContextResponse(params: {
       category: "session",
       content: skill.content,
     })),
+    memoryOs: getMemoryOsSessionSnapshot({
+      sessionKey: params.key,
+    }),
     skills:
       params.availableSkills?.map((skill) => ({
         name: skill.name,
@@ -1457,6 +1465,11 @@ export const sessionsHandlers: GatewayRequestHandlers = {
           };
         },
       });
+      updateMemoryOsFromFeedback({
+        sessionKey: updated.key,
+        summary,
+        updatedAt: record.createdAt,
+      });
       const promptContextResponse = buildPromptContextResponse({
         key: updated.key,
         entry: updated.entry,
@@ -1564,6 +1577,13 @@ export const sessionsHandlers: GatewayRequestHandlers = {
             }),
           };
         },
+      });
+      updateMemoryOsFromConversation({
+        sessionKey: updated.key,
+        messages,
+        summary,
+        taskState,
+        source,
       });
       respond(
         true,

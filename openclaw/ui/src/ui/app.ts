@@ -81,6 +81,7 @@ import {
 import type {
   MetaclawContextSummary,
   MetaclawImportantNotes,
+  MetaclawMemoryOsSnapshot,
   MetaclawPendingApproval,
   MetaclawSandboxPolicy,
   MetaclawSessionNotes,
@@ -461,6 +462,7 @@ export class OpenClawApp extends LitElement {
   @state() metaclawContextSummary: MetaclawContextSummary | null = null;
   @state() metaclawSessionNotes: MetaclawSessionNotes | null = null;
   @state() metaclawTaskState: MetaclawTaskState | null = null;
+  @state() metaclawMemoryOs: MetaclawMemoryOsSnapshot | null = null;
   @state() metaclawPendingApprovals: MetaclawPendingApproval[] = [];
   @state() metaclawSandboxPolicy: MetaclawSandboxPolicy | null = null;
   @state() metaclawSections = createInitialMetaclawSectionsState();

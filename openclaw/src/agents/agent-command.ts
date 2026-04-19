@@ -92,6 +92,11 @@ import {
   shouldAutoRefreshContextSummary,
 } from "../sessions/prompt-context.js";
 import { buildGlobalImportantNotesPromptAddition } from "../sessions/global-important-notes.js";
+import {
+  buildMemoryOsPromptAddition,
+  syncMemoryOsFromTranscript,
+  updateMemoryOsFromConversation,
+} from "../sessions/memory-os.js";
 import { summarizeConversationHistory, summarizeTaskState } from "../gateway/session-prompt-context.js";
 import { readSessionMessages } from "../gateway/session-utils.js";
 
@@ -746,7 +751,7 @@ async function agentCommandInternal(
       const summary = await summarizeConversationHistory({
         messages,
         instructions:
-          "Compress the conversation for continuation inside OpenClaw. Preserve active goals, operator preferences, approvals/denials, files, and unresolved next steps.",
+          "Compress only the actual session dialogue and task execution. Preserve user requests, assistant replies, approvals or denials, file changes, tool calls, tool results, and unresolved next steps.",
       });
       const taskState = await summarizeTaskState({
         messages,
@@ -777,22 +782,48 @@ async function agentCommandInternal(
           entry: nextEntry,
         });
       }
+      if (sessionKey) {
+        updateMemoryOsFromConversation({
+          sessionKey,
+          messages,
+          summary,
+          taskState,
+          source: "auto",
+        });
+      }
       sessionEntry = nextEntry;
     }
+    if (sessionEntry?.sessionId && storePath && sessionKey) {
+      const messages = readSessionMessages(sessionEntry.sessionId, storePath, sessionEntry.sessionFile);
+      syncMemoryOsFromTranscript({
+        sessionKey,
+        messages,
+      });
+    }
+    const globalImportantNotesAddition = buildGlobalImportantNotesPromptAddition({
+      seedFromLegacyNotes: sessionEntry?.promptContext?.importantNotes,
+    });
+    const sessionPromptContextAddition = buildSessionPromptContextAddition(sessionEntry);
+    const memoryOsAddition =
+      sessionKey
+        ? buildMemoryOsPromptAddition({
+            sessionKey,
+            queryText: body,
+            promptContext: sessionEntry?.promptContext,
+          })
+        : undefined;
     const runExtraSystemPrompt = [
       opts.extraSystemPrompt,
-      buildGlobalImportantNotesPromptAddition({
-        seedFromLegacyNotes: sessionEntry?.promptContext?.importantNotes,
-      }),
-      buildSessionPromptContextAddition(sessionEntry),
+      globalImportantNotesAddition,
+      sessionPromptContextAddition,
+      memoryOsAddition,
     ]
       .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
       .join("\n\n");
     const runPromptBodyContext = [
-      buildGlobalImportantNotesPromptAddition({
-        seedFromLegacyNotes: sessionEntry?.promptContext?.importantNotes,
-      }),
-      buildSessionPromptContextAddition(sessionEntry),
+      globalImportantNotesAddition,
+      sessionPromptContextAddition,
+      memoryOsAddition,
     ]
       .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
       .join("\n\n");

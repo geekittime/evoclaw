@@ -22,6 +22,11 @@ import {
   shouldAutoRefreshContextSummary,
 } from "../../sessions/prompt-context.js";
 import { buildGlobalImportantNotesPromptAddition } from "../../sessions/global-important-notes.js";
+import {
+  buildMemoryOsPromptAddition,
+  syncMemoryOsFromTranscript,
+  updateMemoryOsFromConversation,
+} from "../../sessions/memory-os.js";
 import { isReasoningTagProvider } from "../../utils/provider-utils.js";
 import { hasControlCommand } from "../command-detection.js";
 import { resolveEnvelopeFormatOptions } from "../envelope.js";
@@ -453,7 +458,7 @@ export async function runPreparedReply(
     const summary = await summarizeConversationHistory({
       messages,
       instructions:
-        "Compress the conversation for continuation inside OpenClaw. Preserve active goals, operator preferences, approvals/denials, files, and unresolved next steps.",
+        "Compress only the actual session dialogue and task execution. Preserve user requests, assistant replies, approvals or denials, file changes, tool calls, tool results, and unresolved next steps.",
     });
     const taskState = await summarizeTaskState({
       messages,
@@ -482,10 +487,29 @@ export async function runPreparedReply(
     await updateSessionStore(storePath, (store) => {
       store[sessionKey] = sessionEntry!;
     });
+    updateMemoryOsFromConversation({
+      sessionKey,
+      messages,
+      summary,
+      taskState,
+      source: "auto",
+    });
+  }
+  if (!process.env.OPENCLAW_TEST_FAST && sessionEntry?.sessionId && storePath) {
+    const messages = readSessionMessages(sessionEntry.sessionId, storePath, sessionEntry.sessionFile);
+    syncMemoryOsFromTranscript({
+      sessionKey,
+      messages,
+    });
   }
   const promptContextAddition = buildSessionPromptContextAddition(sessionEntry);
   const globalImportantNotesAddition = buildGlobalImportantNotesPromptAddition({
     seedFromLegacyNotes: sessionEntry?.promptContext?.importantNotes,
+  });
+  const memoryOsAddition = buildMemoryOsPromptAddition({
+    sessionKey,
+    queryText: prefixedBodyBase,
+    promptContext: sessionEntry?.promptContext,
   });
   if (globalImportantNotesAddition) {
     extraSystemPromptParts.push(globalImportantNotesAddition);
@@ -493,7 +517,14 @@ export async function runPreparedReply(
   if (promptContextAddition) {
     extraSystemPromptParts.push(promptContextAddition);
   }
-  const promptBodyContextAddition = [globalImportantNotesAddition, promptContextAddition]
+  if (memoryOsAddition) {
+    extraSystemPromptParts.push(memoryOsAddition);
+  }
+  const promptBodyContextAddition = [
+    globalImportantNotesAddition,
+    promptContextAddition,
+    memoryOsAddition,
+  ]
     .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     .join("\n\n");
   const prefixedBody = [threadContextNote, prefixedBodyBase].filter(Boolean).join("\n\n");

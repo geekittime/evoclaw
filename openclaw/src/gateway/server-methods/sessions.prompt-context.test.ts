@@ -13,6 +13,9 @@ const summarizeFeedbackIntoImportantNoteMock = vi.fn();
 const loadGlobalImportantNotesMock = vi.fn();
 const appendGlobalImportantNoteMock = vi.fn();
 const loadWorkspaceSkillEntriesMock = vi.fn();
+const updateMemoryOsFromConversationMock = vi.fn();
+const updateMemoryOsFromFeedbackMock = vi.fn();
+const getMemoryOsSessionSnapshotMock = vi.fn();
 
 vi.mock("../../config/config.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../config/config.js")>();
@@ -62,6 +65,17 @@ vi.mock("../session-prompt-context.js", async (importOriginal) => {
   };
 });
 
+vi.mock("../../sessions/memory-os.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../sessions/memory-os.js")>();
+  return {
+    ...actual,
+    updateMemoryOsFromConversation: (...args: unknown[]) =>
+      updateMemoryOsFromConversationMock(...args),
+    updateMemoryOsFromFeedback: (...args: unknown[]) => updateMemoryOsFromFeedbackMock(...args),
+    getMemoryOsSessionSnapshot: (...args: unknown[]) => getMemoryOsSessionSnapshotMock(...args),
+  };
+});
+
 vi.mock("../../sessions/global-important-notes.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../sessions/global-important-notes.js")>();
   return {
@@ -98,6 +112,9 @@ describe("sessions.promptContext handlers", () => {
     loadGlobalImportantNotesMock.mockReset();
     appendGlobalImportantNoteMock.mockReset();
     loadWorkspaceSkillEntriesMock.mockReset();
+    updateMemoryOsFromConversationMock.mockReset();
+    updateMemoryOsFromFeedbackMock.mockReset();
+    getMemoryOsSessionSnapshotMock.mockReset();
 
     resolveGatewaySessionStoreTargetMock.mockReturnValue({
       canonicalKey: "agent:main:main",
@@ -135,6 +152,15 @@ describe("sessions.promptContext handlers", () => {
       }),
     );
     loadWorkspaceSkillEntriesMock.mockReturnValue([]);
+    getMemoryOsSessionSnapshotMock.mockReturnValue({
+      session_id: "agent:main:main",
+      short_term_page_count: 2,
+      mid_term_segment_count: 1,
+      long_term_note_count: 3,
+      latest_segment_title: "Recent interaction",
+      latest_segment_summary: "Summary",
+      latest_updated_at: 1,
+    });
   });
 
   it("stores feedback summaries into global important notes and session feedback records", async () => {
@@ -171,6 +197,11 @@ describe("sessions.promptContext handlers", () => {
       summary: "Start with a brief greeting when the user says hi.",
       updatedAt: expect.any(Number),
       seedFromLegacyNotes: "Existing durable note",
+    });
+    expect(updateMemoryOsFromFeedbackMock).toHaveBeenCalledWith({
+      sessionKey: "agent:main:main",
+      summary: "Start with a brief greeting when the user says hi.",
+      updatedAt: expect.any(Number),
     });
     expect(sessionEntry.promptContext?.feedbackRecords).toHaveLength(1);
     expect(sessionEntry.promptContext?.sessionNotes).toContain(
@@ -248,6 +279,24 @@ describe("sessions.promptContext handlers", () => {
     expect(sessionEntry.promptContext?.contextSummarySource).toBe("manual");
     expect(sessionEntry.promptContext?.taskState).toContain("Current goal: clean temp0.");
     expect(sessionEntry.promptContext?.taskStateSource).toBe("manual");
+    expect(updateMemoryOsFromConversationMock).toHaveBeenCalledWith({
+      sessionKey: "agent:main:main",
+      messages: [
+        { role: "user", content: "Please inspect the repo and delete stale files." },
+        { role: "assistant", content: "I inspected it and identified two stale files." },
+        {
+          role: "toolresult",
+          content: [{ type: "toolcall", name: "exec", arguments: { command: "ls temp0" } }],
+        },
+        {
+          role: "toolresult",
+          content: [{ type: "toolresult", name: "exec", text: "hi.py\nhh.py\ntemp\n" }],
+        },
+      ],
+      summary: "Goal: clean temp0. Completed: listed files. Pending: confirm deletion of hi.py and hh.py.",
+      taskState: "Current goal: clean temp0. Done: listed files. Next: approve deletion.",
+      source: "manual",
+    });
     expect(respond).toHaveBeenCalledWith(
       true,
       expect.objectContaining({

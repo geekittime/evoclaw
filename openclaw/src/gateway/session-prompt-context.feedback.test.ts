@@ -78,9 +78,9 @@ describe("summarizeConversationHistory", () => {
       const user = body.messages?.[1]?.content ?? "";
 
       expect(body.max_tokens).toBe(1400);
-      expect(system).toContain("Write a detailed but concise summary");
-      expect(system).toContain("Capture the session in natural language");
-      expect(system).toContain("Summarize only what happened in the conversation itself");
+      expect(system).toContain("Write a concise but sufficiently informative summary");
+      expect(system).toContain("Focus on the main task thread and the most important turns");
+      expect(system).toContain("Do not retain low-signal detail");
       expect(system).toContain("Do not summarize repository boilerplate or standing context such as IDENTITY.md, USER.md, SOUL.md");
       expect(system).toContain("Do not summarize user preferences, style rules, global important-notes");
       expect(user).toContain("Please summarize the full session, including the user/assistant conversation and the tool execution process.");
@@ -124,6 +124,46 @@ describe("summarizeConversationHistory", () => {
     });
 
     expect(summary).toContain("今天南京天气怎么样");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("excludes system/runtime guidance messages from conversation summaries", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        messages?: Array<{ role?: string; content?: string }>;
+      };
+      const user = body.messages?.[1]?.content ?? "";
+
+      expect(user).toContain("User: 帮我检查 temp0 目录");
+      expect(user).toContain("Assistant: 我先查看目录内容。");
+      expect(user).not.toContain("Runtime Guidance For This Turn");
+      expect(user).not.toContain("Important Notes (High Priority)");
+
+      return {
+        ok: true,
+        json: async () => ({
+          choices: [
+            {
+              message: {
+                content: "用户要求检查 temp0 目录，助手准备先查看目录内容。",
+              },
+            },
+          ],
+        }),
+      } as Response;
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const { summarizeConversationHistory } = await import("./session-prompt-context.js");
+    const summary = await summarizeConversationHistory({
+      messages: [
+        { role: "system", content: "## Runtime Guidance For This Turn\n## Important Notes (High Priority)" },
+        { role: "user", content: "帮我检查 temp0 目录" },
+        { role: "assistant", content: "我先查看目录内容。" },
+      ],
+    });
+
+    expect(summary).toContain("temp0");
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

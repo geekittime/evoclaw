@@ -250,6 +250,59 @@ describe("runPreparedReply media-only handling", () => {
       "- Start with a concise greeting when the user says hi.\n- Prefer showing the exact command before deletion.\n",
       "utf8",
     );
+    fs.writeFileSync(
+      path.join(stateDir, "prompt-context", "memory-os.json"),
+      JSON.stringify(
+        {
+          version: 1,
+          sessions: {
+            "session-key": {
+              shortTermPages: [
+                {
+                  id: "stm-1",
+                  title: "Inspect repo state",
+                  content: "User: inspect repo\n\nAssistant: checking files",
+                  keywords: ["inspect", "repo", "files"],
+                  updatedAt: 1,
+                },
+              ],
+              segmentIds: ["seg-1"],
+              lastUpdatedAt: 1,
+              lastCompactedAt: 1,
+            },
+          },
+          segments: {
+            "seg-1": {
+              id: "seg-1",
+              sessionKey: "session-key",
+              title: "Repo cleanup workflow",
+              summary: "We already inspected the repo and confirmed the target files.",
+              taskState: "Current task: explain deletion side effects before rm.",
+              keywords: ["repo", "cleanup", "files", "rm"],
+              createdAt: 1,
+              updatedAt: 1,
+              accessCount: 0,
+              heat: 1,
+              source: "manual",
+            },
+          },
+          longTermNotes: {
+            "ltm-1": {
+              id: "ltm-1",
+              content: "When continuing repo cleanup tasks, keep file confirmation context visible.",
+              keywords: ["repo", "cleanup", "files", "confirm"],
+              createdAt: 1,
+              updatedAt: 1,
+              accessCount: 0,
+              sourceSessionKeys: ["session-key"],
+            },
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
 
     await runPreparedReply(
       baseParams({
@@ -302,6 +355,9 @@ describe("runPreparedReply media-only handling", () => {
     expect(call?.followupRun.run.extraSystemPrompt ?? "").toContain("## Conversation Summary");
     expect(call?.followupRun.run.extraSystemPrompt ?? "").toContain(
       "We already inspected the repo and confirmed the target files.",
+    );
+    expect(call?.followupRun.run.extraSystemPrompt ?? "").toContain(
+      "## Memory OS Retrieved Context",
     );
   });
 

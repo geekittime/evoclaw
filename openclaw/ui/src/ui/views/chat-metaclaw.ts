@@ -8,6 +8,7 @@ import { normalizeRoleForGrouping } from "../chat/message-normalizer.ts";
 import type {
   MetaclawContextSummary,
   MetaclawFeedbackResponse,
+  MetaclawMemoryOsSnapshot,
   MetaclawSectionState,
   MetaclawSessionNotes,
   MetaclawTaskState,
@@ -54,6 +55,7 @@ export type ChatMetaclawProps = {
   contextSummary: MetaclawContextSummary | null;
   sessionNotes: MetaclawSessionNotes | null;
   taskState: MetaclawTaskState | null;
+  memoryOs: MetaclawMemoryOsSnapshot | null;
   onApiBaseChange: (value: string) => void;
   onTokenChange: (value: string) => void;
   onRefresh: () => void;
@@ -1199,6 +1201,44 @@ ${summary || "No compressed history has been stored for this session yet."}</pre
   `;
 }
 
+function renderMemoryOsPanel(props: ChatMetaclawProps): TemplateResult {
+  const snapshot = props.memoryOs;
+  const latest =
+    snapshot?.latest_segment_title
+      ? `Latest segment: ${snapshot.latest_segment_title}\n\n${snapshot.latest_segment_summary ?? ""}`.trim()
+      : "Memory OS has not compacted any session segment yet.";
+  return html`
+    <section class="metaclaw-panel metaclaw-panel--notes">
+      <div class="metaclaw-panel__head">
+        <div>
+          <div class="metaclaw-panel__title">Memory OS</div>
+          <div class="metaclaw-panel__sub">
+            Layered memory runtime with STM workset, MTM episodic segments, and LTM durable notes.
+          </div>
+        </div>
+        <span class="metaclaw-status-pill metaclaw-status-pill--${snapshot ? "ready" : "idle"}">
+          ${snapshot ? "Active" : "Empty"}
+        </span>
+      </div>
+      <div class="metaclaw-kpis">
+        <article class="metaclaw-kpi">
+          <strong>${snapshot?.short_term_page_count ?? 0}</strong>
+          <span>STM pages</span>
+        </article>
+        <article class="metaclaw-kpi">
+          <strong>${snapshot?.mid_term_segment_count ?? 0}</strong>
+          <span>MTM segments</span>
+        </article>
+        <article class="metaclaw-kpi">
+          <strong>${snapshot?.long_term_note_count ?? 0}</strong>
+          <span>LTM notes</span>
+        </article>
+      </div>
+      <pre class="metaclaw-notes">${latest}</pre>
+    </section>
+  `;
+}
+
 export function renderMetaclawStudio(
   props: ChatMetaclawProps | undefined,
   viewState: ChatMetaclawViewState,
@@ -1305,7 +1345,8 @@ export function renderMetaclawStudio(
                 viewState,
                 requestUpdate,
               )}
-              ${renderNotesPanel(props)} ${renderSessionNotesPanel(props)}
+              ${renderNotesPanel(props)} ${renderMemoryOsPanel(props)}
+              ${renderSessionNotesPanel(props)}
               ${renderTaskStatePanel(props)} ${renderContextSummaryPanel(props)}
             </div>
           </section>

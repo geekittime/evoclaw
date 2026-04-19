@@ -7,6 +7,7 @@ import type { ExecApprovalsFile, ExecApprovalsSnapshot } from "./controllers/exe
 import type {
   MetaclawContextSummary,
   MetaclawImportantNotes,
+  MetaclawMemoryOsSnapshot,
   MetaclawPendingApproval,
   MetaclawSectionsState,
   MetaclawSandboxPolicy,
@@ -127,6 +128,7 @@ export type AppViewState = {
   metaclawContextSummary: MetaclawContextSummary | null;
   metaclawSessionNotes: MetaclawSessionNotes | null;
   metaclawTaskState: MetaclawTaskState | null;
+  metaclawMemoryOs: MetaclawMemoryOsSnapshot | null;
   metaclawPendingApprovals: MetaclawPendingApproval[];
   metaclawSandboxPolicy: MetaclawSandboxPolicy | null;
   metaclawSections: MetaclawSectionsState;
