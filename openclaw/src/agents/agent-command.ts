@@ -810,6 +810,7 @@ async function agentCommandInternal(
             sessionKey,
             queryText: body,
             promptContext: sessionEntry?.promptContext,
+            tokenBudget: sessionEntry?.contextTokens ?? sessionEntry?.totalTokens,
           })
         : undefined;
     const runExtraSystemPrompt = [

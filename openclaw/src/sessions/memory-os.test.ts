@@ -64,41 +64,135 @@ describe("memory-os", () => {
     const store = loadMemoryOsStore();
     const snapshot = getMemoryOsSessionSnapshot({ sessionKey: "agent:main:main" });
 
-    expect(store.sessions["agent:main:main"]?.shortTermPages.length).toBeGreaterThan(0);
+    expect(store.sessions["agent:main:main"]?.stmPageIds.length).toBeGreaterThan(0);
     expect(snapshot.short_term_page_count).toBeGreaterThan(0);
     expect(snapshot.mid_term_segment_count).toBeGreaterThan(0);
     expect(snapshot.long_term_note_count).toBeGreaterThan(0);
   });
 
-  it("builds retrieved context with recent pages, segments, and long-term notes", () => {
-    updateMemoryOsFromConversation({
-      sessionKey: "agent:main:main",
-      messages: [
-        { role: "user", content: "现在运行一下 pwd 指令" },
-        { role: "assistant", content: "我准备执行 pwd 来确认当前目录。" },
-        {
-          role: "toolresult",
-          content: [{ type: "toolresult", name: "exec", text: "/home/kangshijia/.openclaw/workspace" }],
-        },
-      ],
-      summary: "本 session 刚刚确认了当前目录是 OpenClaw workspace。",
-      taskState: "当前任务：确认工作目录。已完成：运行 pwd。",
-      source: "auto",
+  it("promotes repeated STM pages into derived MTM segments and then into LTM", () => {
+    const sessionKey = "agent:main:main";
+    const messages = [
+      { role: "user", content: "先检查 temp0 目录，再准备删除其中的 py 文件" },
+      { role: "assistant", content: "我先检查目录并确认待删除文件。" },
+      {
+        role: "toolresult",
+        content: [{ type: "toolresult", name: "exec", text: "hh.py\nhi.py\ntemp\n" }],
+      },
+      { role: "user", content: "继续，说明删除前的风险。" },
+      { role: "assistant", content: "删除会影响 hh.py 和 hi.py，需要审批。" },
+    ];
+
+    syncMemoryOsShortTermPages({ sessionKey, messages, updatedAt: 1000 });
+    let store = loadMemoryOsStore();
+    expect(Object.keys(store.segments).length).toBeGreaterThan(0);
+
+    const firstSegment = Object.values(store.segments)[0];
+    expect(firstSegment?.source).toBe("derived");
+
+    buildMemoryOsPromptAddition({
+      sessionKey,
+      queryText: "继续处理 temp0 删除任务，并保留审批上下文",
     });
+    buildMemoryOsPromptAddition({
+      sessionKey,
+      queryText: "继续处理 temp0 删除任务，并保留审批上下文",
+    });
+
+    store = loadMemoryOsStore();
+    const promoted = Object.values(store.segments).find((segment) => segment.promotedToLongTermAt);
+    expect(promoted).toBeTruthy();
+    expect(Object.values(store.longTermNotes).some((note) => note.sourceSegmentIds.includes(promoted!.id))).toBe(
+      true,
+    );
+  });
+
+  it("uses a budget-aware scheduler instead of fixed top-k retrieval", () => {
+    const sessionKey = "agent:main:main";
+    for (let index = 0; index < 6; index += 1) {
+      updateMemoryOsFromConversation({
+        sessionKey,
+        messages: [
+          { role: "user", content: `任务 ${index}：检查 repo 并处理临时文件` },
+          { role: "assistant", content: `我已完成第 ${index} 次检查。` },
+        ],
+        summary: `第 ${index} 次任务总结：检查 repo，确认临时文件位置并准备下一步。`,
+        taskState: `当前任务状态 ${index}：已确认文件位置，待执行后续操作。`,
+        source: "manual",
+        updatedAt: 10_000 + index,
+      });
+    }
     updateMemoryOsFromFeedback({
-      sessionKey: "agent:main:main",
-      summary: "在工作目录相关任务中，优先先确认当前 cwd 再继续执行文件操作。",
+      sessionKey,
+      summary: "继续 repo 清理任务时，优先保留最近的删除风险与待处理文件信息。",
+      updatedAt: 20_000,
     });
 
     const addition = buildMemoryOsPromptAddition({
-      sessionKey: "agent:main:main",
-      queryText: "现在继续在当前工作目录里查找 py 文件",
+      sessionKey,
+      queryText: "继续 repo 清理任务，重点关注最近确认过的待删文件和风险",
+      charBudget: 900,
     });
 
     expect(addition).toContain("## Memory OS Retrieved Context");
-    expect(addition).toContain("### Short-Term Memory");
+    expect(addition!.length).toBeLessThan(1_600);
     expect(addition).toContain("### Mid-Term Episodic Memory");
     expect(addition).toContain("### Long-Term Memory");
+  });
+
+  it("derives runtime memory budget from token budget when char budget is not provided", () => {
+    const sessionKey = "agent:main:main";
+    updateMemoryOsFromConversation({
+      sessionKey,
+      messages: [
+        { role: "user", content: "请继续 repo 清理任务，并保留关键文件确认结果。" },
+        { role: "assistant", content: "我会保留关键结果并继续。" },
+      ],
+      summary:
+        "我们已经检查了 repo，确认需要保留最近的文件确认结果、删除风险、以及未完成的后续步骤。",
+      taskState:
+        "当前任务：继续 repo 清理。已完成：确认关键文件。待完成：下一步清理动作和审批。",
+      source: "manual",
+      updatedAt: 50_000,
+    });
+    updateMemoryOsFromFeedback({
+      sessionKey,
+      summary: "继续 repo 清理时，应优先保留最近的文件确认结果和删除风险。",
+      updatedAt: 50_100,
+    });
+
+    const smaller = buildMemoryOsPromptAddition({
+      sessionKey,
+      queryText: "继续 repo 清理任务",
+      tokenBudget: 512,
+    });
+    const larger = buildMemoryOsPromptAddition({
+      sessionKey,
+      queryText: "继续 repo 清理任务",
+      tokenBudget: 8192,
+    });
+
+    expect(smaller).toBeTruthy();
+    expect(larger).toBeTruthy();
+    expect(smaller!.length).toBeLessThanOrEqual(larger!.length);
+  });
+
+  it("evicts low-retention pages when the page store grows too large", () => {
+    const sessionKey = "agent:main:main";
+    for (let index = 0; index < 40; index += 1) {
+      syncMemoryOsShortTermPages({
+        sessionKey,
+        messages: [
+          { role: "user", content: `用户提问 ${index}` },
+          { role: "assistant", content: `回复 ${index}` },
+        ],
+        updatedAt: index,
+      });
+    }
+
+    const store = loadMemoryOsStore();
+    expect(Object.keys(store.pages).length).toBeLessThanOrEqual(256);
+    expect(store.sessions[sessionKey]?.stmPageIds.length).toBeLessThanOrEqual(12);
   });
 
   it("does not duplicate global important notes or the current session summary in retrieved context", () => {
@@ -168,5 +262,66 @@ describe("memory-os", () => {
     const snapshot = getMemoryOsSessionSnapshot({ sessionKey: "agent:main:main" });
     expect(snapshot.mid_term_segment_count).toBe(0);
     expect(snapshot.latest_segment_title).toBeNull();
+  });
+
+  it("migrates legacy version-1 memory-os data to the new schema", () => {
+    fs.writeFileSync(
+      path.join(stateDir, "prompt-context", "memory-os.json"),
+      JSON.stringify(
+        {
+          version: 1,
+          sessions: {
+            "agent:main:main": {
+              shortTermPages: [
+                {
+                  id: "stm-1",
+                  title: "legacy page",
+                  content: "User: hi\nAssistant: hello",
+                  keywords: ["legacy", "page"],
+                  updatedAt: 1,
+                },
+              ],
+              segmentIds: ["seg-1"],
+              lastUpdatedAt: 1,
+              lastCompactedAt: 1,
+            },
+          },
+          segments: {
+            "seg-1": {
+              id: "seg-1",
+              sessionKey: "agent:main:main",
+              title: "legacy segment",
+              summary: "legacy summary",
+              keywords: ["legacy", "summary"],
+              createdAt: 1,
+              updatedAt: 1,
+              accessCount: 0,
+              heat: 1,
+              source: "manual",
+            },
+          },
+          longTermNotes: {
+            "ltm-1": {
+              id: "ltm-1",
+              content: "legacy note",
+              keywords: ["legacy", "note"],
+              createdAt: 1,
+              updatedAt: 1,
+              accessCount: 0,
+              sourceSessionKeys: ["agent:main:main"],
+            },
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const store = loadMemoryOsStore();
+    expect(store.version).toBe(2);
+    expect(Object.keys(store.pages)).toHaveLength(1);
+    expect(store.sessions["agent:main:main"]?.stmPageIds).toHaveLength(1);
+    expect(store.segments["seg-1"]?.pageIds).toEqual([]);
   });
 });

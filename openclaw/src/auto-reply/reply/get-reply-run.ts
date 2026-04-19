@@ -510,6 +510,7 @@ export async function runPreparedReply(
     sessionKey,
     queryText: prefixedBodyBase,
     promptContext: sessionEntry?.promptContext,
+    tokenBudget: sessionEntry?.contextTokens ?? sessionEntry?.totalTokens,
   });
   if (globalImportantNotesAddition) {
     extraSystemPromptParts.push(globalImportantNotesAddition);

@@ -254,18 +254,23 @@ describe("runPreparedReply media-only handling", () => {
       path.join(stateDir, "prompt-context", "memory-os.json"),
       JSON.stringify(
         {
-          version: 1,
+          version: 2,
+          pages: {
+            "stm-1": {
+              id: "stm-1",
+              sessionKey: "session-key",
+              title: "Inspect repo state",
+              content: "User: inspect repo\n\nAssistant: checking files",
+              keywords: ["inspect", "repo", "files"],
+              createdAt: 1,
+              updatedAt: 1,
+              accessCount: 0,
+              heat: 1,
+            },
+          },
           sessions: {
             "session-key": {
-              shortTermPages: [
-                {
-                  id: "stm-1",
-                  title: "Inspect repo state",
-                  content: "User: inspect repo\n\nAssistant: checking files",
-                  keywords: ["inspect", "repo", "files"],
-                  updatedAt: 1,
-                },
-              ],
+              stmPageIds: ["stm-1"],
               segmentIds: ["seg-1"],
               lastUpdatedAt: 1,
               lastCompactedAt: 1,
@@ -279,11 +284,13 @@ describe("runPreparedReply media-only handling", () => {
               summary: "We already inspected the repo and confirmed the target files.",
               taskState: "Current task: explain deletion side effects before rm.",
               keywords: ["repo", "cleanup", "files", "rm"],
+              pageIds: ["stm-1"],
               createdAt: 1,
               updatedAt: 1,
               accessCount: 0,
               heat: 1,
               source: "manual",
+              promotionCount: 0,
             },
           },
           longTermNotes: {
@@ -294,7 +301,10 @@ describe("runPreparedReply media-only handling", () => {
               createdAt: 1,
               updatedAt: 1,
               accessCount: 0,
+              heat: 1,
+              promotionCount: 0,
               sourceSessionKeys: ["session-key"],
+              sourceSegmentIds: [],
             },
           },
         },
